@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const moduleUrl = new URL("../custom_components/xiaoai_navidrome/frontend/panel.js", import.meta.url);
 const {
   RequestGate,
+  XiaoAINavidromePanel,
   coverApiPath,
   coverClassNames,
   formatDuration,
@@ -134,7 +135,43 @@ test("player uses a rotating disc, icon controls, ranges, and one mode button", 
   assert.match(css, /prefers-reduced-motion:[^}]+animation: none/s);
 });
 
+test("playlist navigation restores stable focus keys without retaining DOM nodes", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let focused = "";
+  let targets = [{ dataset: { focusKey: "playlist-back" }, focus: () => { focused = "playlist-back"; } }];
+  let cancelled = false;
+  Object.assign(panel, {
+    _connected: true,
+    isConnected: true,
+    libraryTab: "playlists",
+    selectedPlaylist: null,
+    playlistTrackOffset: 0,
+    playlistTracks: [],
+    _playlistReturnFocusKey: "",
+    _playlistTracksGate: { cancel: () => { cancelled = true; } },
+    shadowRoot: { querySelectorAll: () => targets },
+    _render: () => undefined,
+    _loadPlaylistTracks: async () => undefined,
+  });
+
+  await panel._openPlaylist({ id: "playlist-one", name: "Synthetic Playlist" });
+  await Promise.resolve();
+  assert.equal(focused, "playlist-back");
+  assert.equal(panel._playlistReturnFocusKey, "playlist-cover:playlist-one");
+
+  targets = [{ dataset: { focusKey: "playlist-cover:playlist-one" }, focus: () => { focused = "playlist-cover:playlist-one"; } }];
+  panel._closePlaylist();
+  await Promise.resolve();
+  assert.equal(cancelled, true);
+  assert.equal(focused, "playlist-cover:playlist-one");
+  assert.equal(panel.selectedPlaylist, null);
+});
+
 test("playlist navigation preserves keyboard focus across Shadow DOM rerenders", async (context) => {
+  if (process.env.CI && !process.env.CHROME_PATH) {
+    context.skip("Set CHROME_PATH to enable the optional browser regression in CI");
+    return;
+  }
   const browserCandidates = [
     process.env.CHROME_PATH,
     "/usr/bin/chromium",
