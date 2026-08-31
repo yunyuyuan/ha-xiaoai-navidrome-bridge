@@ -391,6 +391,21 @@ def test_cover_art_rejects_unknown_content() -> None:
         asyncio.run(client.async_cover_art("synthetic-cover"))
 
 
+def test_cover_art_requests_selected_thumbnail_size() -> None:
+    """Cover retrieval delegates density-aware scaling to Navidrome."""
+
+    def responder(**request: Any) -> _Response:
+        assert request["url"].endswith("/library/rest/getCoverArt.view")
+        assert request["params"]["id"] == "synthetic-cover"
+        assert request["params"]["size"] == "320"
+        return _Response(200, b"\xff\xd8\xffsynthetic")
+
+    client, _ = _client(responder)
+    content, content_type = asyncio.run(client.async_cover_art("synthetic-cover", 320))
+    assert content == b"\xff\xd8\xffsynthetic"
+    assert content_type == "image/jpeg"
+
+
 def test_share_origin_normalizes_default_https_port() -> None:
     """Explicit :443 and an omitted HTTPS port represent the same origin."""
 

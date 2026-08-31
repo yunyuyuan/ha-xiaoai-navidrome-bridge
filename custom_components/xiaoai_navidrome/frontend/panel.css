@@ -77,6 +77,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .brand, .header-actions, .row-actions, .subheading, .queue-heading,
 .transport, .pager, .detail-list, .player-label, .player-stage, .volume-control { display: flex; align-items: center; }
 .brand { min-width: 0; gap: 12px; }
+.menu-button {
+  display: none;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  padding: 9px;
+  border-radius: 50%;
+}
 .brand-mark {
   display: grid;
   flex: 0 0 auto;
@@ -341,6 +349,7 @@ h2 { font-size: 17px; }
 
 :host([narrow]) .panel { padding: 12px; }
 :host([narrow]) .header { grid-template-columns: 1fr; padding: 14px; }
+:host([narrow]:not([kiosk])) .menu-button { display: grid; place-items: center; }
 :host([narrow]) .header-actions { justify-content: flex-start; }
 :host([narrow]) .layout { grid-template-columns: 1fr; grid-template-areas: "queue" "library"; gap: 13px; }
 :host([narrow]) .track-row { grid-template-columns: 1fr; }

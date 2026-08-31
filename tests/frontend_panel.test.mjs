@@ -10,10 +10,12 @@ const execFileAsync = promisify(execFile);
 
 const moduleUrl = new URL("../custom_components/xiaoai_navidrome/frontend/panel.js", import.meta.url);
 const {
+  CoverStore,
   RequestGate,
   XiaoAINavidromePanel,
   coverApiPath,
   coverClassNames,
+  coverPixelSize,
   formatDuration,
   nextPlaybackMode,
   playbackMode,
@@ -63,11 +65,21 @@ test("range fill and optimistic volume reconciliation are bounded", () => {
   assert.equal(reconcilePendingVolume(smallChange, 0.5, 1000), smallChange);
 });
 
-test("cover requests use one relative authenticated Home Assistant path", async () => {
+test("cover requests use density-aware authenticated Home Assistant paths", async () => {
   assert.equal(
-    coverApiPath("entry / one", "cover / two"),
-    "/api/xiaoai_navidrome/cover/entry%20%2F%20one/cover%20%2F%20two",
+    coverApiPath("entry / one", "cover / two", 384),
+    "/api/xiaoai_navidrome/cover/entry%20%2F%20one/cover%20%2F%20two?size=384",
   );
+  assert.equal(coverApiPath("entry-one", "cover-two").endsWith("?size=64"), true);
+  assert.equal(coverPixelSize("", 1), 64);
+  assert.equal(coverPixelSize("queue-cover", 1.5), 96);
+  assert.equal(coverPixelSize("disc-cover", 1), 96);
+  assert.equal(coverPixelSize("disc-cover", 1.5), 160);
+  assert.equal(coverPixelSize("detail-cover", 1), 160);
+  assert.equal(coverPixelSize("detail-cover", 2), 256);
+  assert.equal(coverPixelSize("playlist-cover", 1), 256);
+  assert.equal(coverPixelSize("playlist-cover", 1.5), 384);
+  assert.equal(coverPixelSize("playlist-cover", 3), 384);
   const source = await readFile(moduleUrl, "utf8");
   assert.equal(source.includes("fetchWithAuth(this.owner.hass.hassUrl"), false);
   assert.equal(source.includes("fetchWithAuth(path)"), true);
@@ -79,6 +91,37 @@ test("specialized covers retain the shared image crop class", () => {
     coverClassNames("playlist-cover"),
     "cover playlist-cover cover-placeholder",
   );
+});
+
+test("cover cache deduplicates one size while isolating higher-resolution variants", async () => {
+  const requests = [];
+  const owner = {
+    entryId: "entry-one",
+    hass: {
+      fetchWithAuth: async (path) => {
+        requests.push(path);
+        return {
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["synthetic-image"], { type: "image/jpeg" }),
+        };
+      },
+    },
+  };
+  const store = new CoverStore(owner);
+  const [smallOne, smallTwo, large] = await Promise.all([
+    store.get("cover-one", 64),
+    store.get("cover-one", 64),
+    store.get("cover-one", 256),
+  ]);
+  assert.equal(smallOne, smallTwo);
+  assert.notEqual(smallOne, large);
+  assert.equal(requests.length, 2);
+  assert.equal(requests.some((path) => path.endsWith("?size=64")), true);
+  assert.equal(requests.some((path) => path.endsWith("?size=256")), true);
+  assert.equal(store.peek("cover-one", 64), smallOne);
+  assert.equal(store.peek("cover-one", 256), large);
+  store.clear();
 });
 
 test("panel accepts only the current WebSocket response shapes", () => {
@@ -132,6 +175,8 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   );
   assert.equal(source.includes('className: "track-primary"'), true);
   assert.equal(source.includes('className: "playlist-cover-button"'), true);
+  assert.equal(source.includes('className: "menu-button icon-button"'), true);
+  assert.equal(source.includes('new CustomEvent("hass-toggle-menu"'), true);
   assert.equal(source.includes("patchElement(current, replacement)"), true);
   assert.equal(source.includes("this.shadowRoot.replaceChildren"), false);
   assert.equal(source.includes("this.playlistTrackOffset + index"), true);
@@ -142,6 +187,8 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   assert.match(css, /\.tab\[aria-selected="true"\]/);
   assert.match(css, /\.track-primary:hover/);
   assert.match(css, /\.playlist-cover-button:hover/);
+  assert.match(css, /:host\(\[narrow\]:not\(\[kiosk\]\)\) \.menu-button \{ display: grid/);
+  assert.match(css, /\.menu-button \{[^}]+display: none/s);
 });
 
 test("player uses a rotating disc, icon controls, ranges, and one mode button", async () => {
@@ -291,8 +338,12 @@ ${source}
 const panel = document.createElement("xiaoai-navidrome-panel");
 document.body.append(panel);
 panel.libraryTab = "playlists";
-panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1 }];
-panel._covers.peek = () => "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
+panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1, cover_art: "playlist-cover-one" }];
+const coverSizes = [];
+panel._covers.peek = (_id, pixelSize) => {
+  coverSizes.push(pixelSize);
+  return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
+};
 panel.queue = {
   ...panel.queue,
   state: "playing",
@@ -302,6 +353,7 @@ panel.queue = {
   player: { volume_level: 0.4, supports_seek: true, duration: 180 },
 };
 panel._render();
+const densityAwareCovers = [64, 96, 256].every((size) => coverSizes.includes(size));
 const mainBefore = panel.shadowRoot.querySelector("main.panel");
 const libraryBefore = panel.shadowRoot.querySelector(".library-pane");
 const queueBefore = panel.shadowRoot.querySelector(".queue-pane");
@@ -350,8 +402,12 @@ const settledRangePatched = progressBefore.value === "20"
   && progressBefore.dataset.localEditing === undefined;
 panel.entryId = "synthetic-entry";
 panel._initializedEntry = "synthetic-entry";
+let menuToggled = false;
+document.addEventListener("hass-toggle-menu", () => { menuToggled = true; }, { once: true });
 panel.narrow = true;
 panel.narrow = true;
+panel.shadowRoot.querySelector(".menu-button").click();
+const mobileMenuWorks = menuToggled && panel.hasAttribute("narrow");
 panel.hass = { connection: {} };
 panel.panel = { config: { entry_id: "synthetic-entry" } };
 const haPropertiesStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
@@ -389,7 +445,7 @@ const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" &&
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
+document.body.dataset.focusResult = densityAwareCovers && mobileMenuWorks && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};menu=\${mobileMenuWorks};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

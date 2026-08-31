@@ -12,14 +12,14 @@ Panel 的 JavaScript 和 CSS 由 Home Assistant 静态路径提供。浏览、�
 
 | 区域 | 功能 |
 |---|---|
-| 顶部状态 | 集成名称、索引同步状态、日/夜/跟随系统主题 |
+| 顶部状态 | 移动端 Home Assistant 侧栏菜单、集成名称、索引同步状态、日/夜/跟随系统主题 |
 | 播放器 | 旋转 CD、当前曲目、进度、上一首、播放/暂停、下一首、三态播放模式、音量和静音 |
 | 播放队列 | 输出播放器、可跳转的曲目队列和图标式清空操作 |
 | 曲库 | 本地索引分页、搜索；点击封面、标题或元数据区域可立即播放，右侧按钮提供下一首、加入队列和详情操作 |
 | 歌单 | Navidrome 歌单搜索；点击歌单封面进入曲目列表，点击歌单曲目的主体区域从该曲目开始播放完整歌单 |
 | 详情 | 封面、标题、歌手、专辑、时长、格式、码率、年份等可用元数据 |
 
-在宽屏布局中，曲库位于左侧、队列位于右侧。单栏和移动端布局会把队列移到曲库上方，保证播放控制优先可见。
+在宽屏布局中，曲库位于左侧、队列位于右侧。单栏和移动端布局会把队列移到曲库上方，保证播放控制优先可见。Home Assistant 把 Panel 标记为窄屏时，标题左侧显示菜单按钮并派发原生 `hass-toggle-menu` 事件；kiosk 模式保持隐藏。[8] [9]
 
 ## 队列语义
 
@@ -65,7 +65,7 @@ Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素�
 
 ## 封面与详情
 
-浏览器不直接访问带 Subsonic 凭据的 Navidrome URL。Panel 使用 HA 鉴权封面代理，代理只接受有限长度的封面 ID，限制响应体大小，并向 Navidrome 请求适合界面的缩略图。浏览器将响应读取为 Blob，并用有界对象 URL 缓存减少重复请求；数量上限覆盖默认完整队列，内存仍受总字节上限约束。
+浏览器不直接访问带 Subsonic 凭据的 Navidrome URL。Panel 使用 HA 鉴权封面代理，代理只接受有限长度的封面 ID 和 64、96、128、160、192、256、320、384 px 八种尺寸，限制响应体大小，并通过 OpenSubsonic `getCoverArt` 的 `size` 参数让 Navidrome 生成缩略图。[6] 客户端依据曲目、队列、旋转 CD、详情或歌单的 CSS 尺寸以及 `devicePixelRatio` 选择不小于目标尺寸的最小档位；像素密度按 1.5 倍封顶，在清晰度与传输速度之间取平衡。Navidrome 会缓存缩放后的封面。[7] 浏览器按“尺寸 + 封面 ID”缓存 Blob 对象 URL，防止不同用途错误共用低清图片；数量上限覆盖默认完整队列，内存仍受总字节上限约束。
 
 所有曲目、歌手、专辑和错误文本均通过 DOM `textContent` 写入，不将 Navidrome 元数据作为 HTML 解析。
 
@@ -96,3 +96,7 @@ Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素�
 [3]: https://developers.home-assistant.io/docs/core/entity/media-player/ "Home Assistant media player entity features"
 [4]: https://developers.home-assistant.io/docs/integration_listen_events/ "Home Assistant event subscriptions"
 [5]: https://github.com/home-assistant/frontend/blob/e09c4084b71b53d12858c3051559855fe0ce366c/src/panels/custom/ha-panel-custom.ts "Home Assistant custom panel container source"
+[6]: https://opensubsonic.netlify.app/docs/endpoints/getcoverart/ "OpenSubsonic getCoverArt endpoint"
+[7]: https://www.navidrome.org/docs/usage/library/artwork/ "Navidrome artwork resolution and image encoding"
+[8]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/layouts/home-assistant-main.ts "Home Assistant main layout sidebar event handling"
+[9]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/components/ha-menu-button.ts "Home Assistant menu button implementation"

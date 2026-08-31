@@ -10,6 +10,21 @@ from .const import COVER_API_URL, DOMAIN
 from .navidrome import NavidromeAuthError, NavidromeError
 
 MAX_COVER_ID_LENGTH = 512
+COVER_ART_SIZES = frozenset({64, 96, 128, 160, 192, 256, 320, 384})
+DEFAULT_COVER_ART_SIZE = 64
+
+
+def requested_cover_size(value: str | None) -> int:
+    """Return one bounded thumbnail size accepted by the panel."""
+    if value is None:
+        return DEFAULT_COVER_ART_SIZE
+    try:
+        size = int(value)
+    except (TypeError, ValueError) as err:
+        raise web.HTTPBadRequest(text="Invalid cover size") from err
+    if size not in COVER_ART_SIZES:
+        raise web.HTTPBadRequest(text="Invalid cover size")
+    return size
 
 
 class XiaoAINavidromeCoverView(HomeAssistantView):
@@ -28,8 +43,9 @@ class XiaoAINavidromeCoverView(HomeAssistantView):
             raise web.HTTPNotFound(text="Integration entry not found")
         if not cover_id or len(cover_id) > MAX_COVER_ID_LENGTH or "/" in cover_id:
             raise web.HTTPBadRequest(text="Invalid cover identifier")
+        size = requested_cover_size(request.query.get("size"))
         try:
-            content, content_type = await runtime.navidrome.async_cover_art(cover_id)
+            content, content_type = await runtime.navidrome.async_cover_art(cover_id, size)
         except NavidromeAuthError as err:
             raise web.HTTPUnauthorized(text="Navidrome authentication failed") from err
         except NavidromeError as err:

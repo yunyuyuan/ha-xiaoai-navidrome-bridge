@@ -5,6 +5,8 @@ const PAGE_SIZE = 30;
 const COVER_CACHE_ITEMS = 640;
 const COVER_CACHE_BYTES = 32 * 1024 * 1024;
 const COVER_CONCURRENCY = 6;
+const COVER_DPR_LIMIT = 1.5;
+const COVER_SIZE_BUCKETS = Object.freeze([64, 96, 128, 160, 192, 256, 320, 384]);
 const VOLUME_CONFIRM_TIMEOUT = 10000;
 const STATIC_VERSION = new URL(import.meta.url).search;
 let stylesheetPromise;
@@ -90,9 +92,22 @@ function updateRangeFill(range) {
   range.style.setProperty("--range-progress", `${rangeFillPercent(range.value, range.max)}%`);
 }
 
+/** Select a bounded density-aware transfer size for one visual cover context. */
+export function coverPixelSize(className = "", devicePixelRatio = globalThis.devicePixelRatio || 1) {
+  const cssPixels = ({
+    "disc-cover": 96,
+    "detail-cover": 144,
+    "playlist-cover": 240,
+  })[className] || 48;
+  const density = Math.max(1, Math.min(COVER_DPR_LIMIT, Number(devicePixelRatio) || 1));
+  const required = cssPixels * density;
+  return COVER_SIZE_BUCKETS.find((size) => size >= required)
+    || COVER_SIZE_BUCKETS[COVER_SIZE_BUCKETS.length - 1];
+}
+
 /** Return the relative authenticated Home Assistant cover endpoint. */
-export function coverApiPath(entryId, coverId) {
-  return `/api/xiaoai_navidrome/cover/${encodeURIComponent(String(entryId))}/${encodeURIComponent(String(coverId))}`;
+export function coverApiPath(entryId, coverId, size = COVER_SIZE_BUCKETS[0]) {
+  return `/api/xiaoai_navidrome/cover/${encodeURIComponent(String(entryId))}/${encodeURIComponent(String(coverId))}?size=${encodeURIComponent(String(size))}`;
 }
 
 /** Compose a specialized cover class without dropping the shared crop rules. */
@@ -289,6 +304,7 @@ export function patchElement(current, replacement) {
 // Material Design Icons 7.4.47 (Apache-2.0):
 // https://github.com/Templarian/MaterialDesign-JS
 const ICON_PATHS = Object.freeze({
+  menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
   previous: "M6,18V6H8V18H6M9.5,12L18,6V18L9.5,12Z",
   next: "M16,18H18V6H16M6,18L14.5,12L6,6V18Z",
   play: "M8,5.14V19.14L19,12.14L8,5.14Z",
@@ -354,30 +370,32 @@ class CoverStore {
     this.closed = false;
   }
 
-  peek(coverId) {
+  peek(coverId, pixelSize = COVER_SIZE_BUCKETS[0]) {
     const id = String(coverId || "");
-    const existing = id && !this.closed ? this.entries.get(id) : null;
+    const key = id ? `${pixelSize}:${id}` : "";
+    const existing = key && !this.closed ? this.entries.get(key) : null;
     if (!existing) return null;
-    this.entries.delete(id);
-    this.entries.set(id, existing);
+    this.entries.delete(key);
+    this.entries.set(key, existing);
     return existing.url || null;
   }
 
-  get(coverId) {
+  get(coverId, pixelSize = COVER_SIZE_BUCKETS[0]) {
     const id = String(coverId || "");
     if (!id || this.closed) return Promise.resolve(null);
-    const existing = this.entries.get(id);
+    const key = `${pixelSize}:${id}`;
+    const existing = this.entries.get(key);
     if (existing) {
-      this.entries.delete(id);
-      this.entries.set(id, existing);
+      this.entries.delete(key);
+      this.entries.set(key, existing);
       return Promise.resolve(existing.url);
     }
-    if (this.pending.has(id)) return this.pending.get(id);
+    if (this.pending.has(key)) return this.pending.get(key);
     const promise = new Promise((resolve) => {
-      this.jobs.push({ id, resolve });
+      this.jobs.push({ id, key, pixelSize, resolve });
       this._drain();
     });
-    this.pending.set(id, promise);
+    this.pending.set(key, promise);
     return promise;
   }
 
@@ -389,7 +407,7 @@ class CoverStore {
         .catch(() => job.resolve(null))
         .finally(() => {
           this.active -= 1;
-          this.pending.delete(job.id);
+          this.pending.delete(job.key);
           this._drain();
         });
     }
@@ -404,10 +422,10 @@ class CoverStore {
         job.resolve(null);
         return;
       }
-      const path = coverApiPath(entryId, job.id);
+      const path = coverApiPath(entryId, job.id, job.pixelSize);
       const response = await this.owner.hass.fetchWithAuth(path);
       if (response.status === 404) {
-        this._remember(job.id, null, 0);
+        this._remember(job.key, null, 0);
         job.resolve(null);
         return;
       }
@@ -424,7 +442,7 @@ class CoverStore {
         job.resolve(null);
         return;
       }
-      this._remember(job.id, url, size);
+      this._remember(job.key, url, size);
       job.resolve(url);
     } catch (error) {
       if (url) URL.revokeObjectURL(url);
@@ -432,14 +450,14 @@ class CoverStore {
     }
   }
 
-  _remember(id, url, size) {
-    const prior = this.entries.get(id);
+  _remember(key, url, size) {
+    const prior = this.entries.get(key);
     if (prior) {
-      this.entries.delete(id);
+      this.entries.delete(key);
       this.bytes -= prior.size;
       if (prior.url) URL.revokeObjectURL(prior.url);
     }
-    this.entries.set(id, { url, size });
+    this.entries.set(key, { url, size });
     this.bytes += size;
     while (this.entries.size > COVER_CACHE_ITEMS || this.bytes > COVER_CACHE_BYTES) {
       const [oldId, old] = this.entries.entries().next().value;
@@ -515,6 +533,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   set hass(value) {
     this._hass = value;
+    this.toggleAttribute("kiosk", Boolean(value?.kioskMode));
     if (this._connected && this._initializedEntry !== this.entryId) this._start();
   }
 
@@ -882,10 +901,12 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       makeElement("span", { text: "♫" }),
     ]);
     holder.dataset.coverLabel = safeLabel;
-    const key = String(coverId || "");
-    if (!key) return holder;
-    holder.dataset.coverKey = key;
-    const cachedUrl = this._covers.peek(key);
+    const id = String(coverId || "");
+    if (!id) return holder;
+    const pixelSize = coverPixelSize(className);
+    const coverKey = `${pixelSize}:${id}`;
+    holder.dataset.coverKey = coverKey;
+    const cachedUrl = this._covers.peek(id, pixelSize);
     if (cachedUrl) {
       const image = document.createElement("img");
       image.alt = voiceSafeText(label, "音乐封面");
@@ -896,8 +917,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       holder.classList.remove("cover-placeholder");
       return holder;
     }
-    this._covers.get(key).then((url) => {
-      if (!url || !this._connected || holder.dataset.coverKey !== key || !holder.isConnected) return;
+    this._covers.get(id, pixelSize).then((url) => {
+      if (!url || !this._connected || holder.dataset.coverKey !== coverKey || !holder.isConnected) return;
       const image = document.createElement("img");
       image.alt = voiceSafeText(label, "音乐封面");
       image.src = url;
@@ -965,6 +986,10 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   _renderHeader() {
     const header = makeElement("header", { className: "header" });
     const brand = makeElement("div", { className: "brand" }, [
+      iconButton("menu", "打开 Home Assistant 侧边栏", () => this._toggleHassMenu(), {
+        className: "menu-button icon-button",
+        dataset: { focusKey: "hass-menu" },
+      }),
       makeElement("div", { className: "brand-mark", text: "♫" }),
       makeElement("div", {}, [
         makeElement("h1", { text: "XiaoAI Navidrome" }),
@@ -977,6 +1002,13 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     ]);
     header.append(brand, actions);
     return header;
+  }
+
+  _toggleHassMenu() {
+    this.dispatchEvent(new CustomEvent("hass-toggle-menu", {
+      bubbles: true,
+      composed: true,
+    }));
   }
 
   _renderLibrary() {
