@@ -2,12 +2,13 @@
 
 const WS_PREFIX = "xiaoai_navidrome/";
 const PAGE_SIZE = 30;
-const COVER_CACHE_ITEMS = 48;
+const COVER_CACHE_ITEMS = 640;
 const COVER_CACHE_BYTES = 32 * 1024 * 1024;
 const COVER_CONCURRENCY = 6;
 const VOLUME_CONFIRM_TIMEOUT = 10000;
 const STATIC_VERSION = new URL(import.meta.url).search;
 let stylesheetPromise;
+const EVENT_LISTENERS = Symbol("xiaoaiEventListeners");
 
 /** Convert library-provided text to a short, control-character-free display string. */
 export function voiceSafeText(value, fallback = "") {
@@ -184,10 +185,105 @@ function makeElement(tag, options = {}, children = []) {
     for (const [key, value] of Object.entries(options.dataset)) node.dataset[key] = String(value);
   }
   if (options.on) {
+    node[EVENT_LISTENERS] = options.on;
     for (const [event, listener] of Object.entries(options.on)) node.addEventListener(event, listener);
   }
   node.append(...children.filter(Boolean));
   return node;
+}
+
+function syncEventListeners(current, replacement) {
+  for (const [event, listener] of Object.entries(current[EVENT_LISTENERS] || {})) {
+    current.removeEventListener(event, listener);
+  }
+  const listeners = replacement[EVENT_LISTENERS] || {};
+  for (const [event, listener] of Object.entries(listeners)) {
+    current.addEventListener(event, listener);
+  }
+  current[EVENT_LISTENERS] = listeners;
+}
+
+function syncAttributes(current, replacement) {
+  const preserveEditingRange = current.localName === "input"
+    && current.type === "range"
+    && current.dataset.localEditing === "true"
+    && !replacement.disabled;
+  for (const attribute of [...current.attributes]) {
+    if (preserveEditingRange && ["style", "data-local-editing"].includes(attribute.name)) continue;
+    if (!replacement.hasAttribute(attribute.name)) current.removeAttribute(attribute.name);
+  }
+  for (const attribute of [...replacement.attributes]) {
+    if (preserveEditingRange && attribute.name === "style") continue;
+    if (current.getAttribute(attribute.name) !== attribute.value) {
+      current.setAttribute(attribute.name, attribute.value);
+    }
+  }
+}
+
+function syncControlState(current, replacement) {
+  const tag = current.localName;
+  if (tag === "input") {
+    if (replacement.disabled) delete current.dataset.localEditing;
+    current.disabled = replacement.disabled;
+    current.checked = replacement.checked;
+    current.min = replacement.min;
+    current.max = replacement.max;
+    current.step = replacement.step;
+    if (current.dataset.localEditing !== "true") current.value = replacement.value;
+  } else if (tag === "button") {
+    current.disabled = replacement.disabled;
+  } else if (tag === "option") {
+    current.selected = replacement.selected;
+  }
+}
+
+/** Update one detached render tree into the live tree without replacing stable nodes. */
+export function patchElement(current, replacement) {
+  if (
+    current.nodeType !== replacement.nodeType
+    || (current.nodeType === Node.ELEMENT_NODE && current.localName !== replacement.localName)
+  ) {
+    current.replaceWith(replacement);
+    return replacement;
+  }
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.nodeValue !== replacement.nodeValue) current.nodeValue = replacement.nodeValue;
+    return current;
+  }
+
+  const currentCoverKey = current.dataset?.coverKey || "";
+  const replacementCoverKey = replacement.dataset?.coverKey || "";
+  if ((currentCoverKey || replacementCoverKey) && currentCoverKey !== replacementCoverKey) {
+    current.replaceWith(replacement);
+    return replacement;
+  }
+  const sameCover = current.dataset?.coverKey
+    && current.dataset.coverKey === replacement.dataset?.coverKey;
+  const currentImage = sameCover ? current.querySelector(":scope > img") : null;
+  const replacementImage = sameCover ? replacement.querySelector(":scope > img") : null;
+  if (currentImage && !replacementImage) replacement.classList.remove("cover-placeholder");
+  syncAttributes(current, replacement);
+  syncEventListeners(current, replacement);
+  syncControlState(current, replacement);
+  if (currentImage && !replacementImage) {
+    currentImage.alt = replacement.dataset.coverLabel || currentImage.alt;
+    return current;
+  }
+
+  const currentChildren = [...current.childNodes];
+  const replacementChildren = [...replacement.childNodes];
+  const shared = Math.min(currentChildren.length, replacementChildren.length);
+  for (let index = 0; index < shared; index += 1) {
+    patchElement(currentChildren[index], replacementChildren[index]);
+  }
+  for (let index = shared; index < replacementChildren.length; index += 1) {
+    current.append(replacementChildren[index]);
+  }
+  for (let index = currentChildren.length - 1; index >= replacementChildren.length; index -= 1) {
+    currentChildren[index].remove();
+  }
+  if (current.localName === "select") current.value = replacement.value;
+  return current;
 }
 
 // Material Design Icons 7.4.47 (Apache-2.0):
@@ -616,6 +712,10 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const incomingRevision = Number(status?.revision);
     const currentRevision = Number(this.queue?.revision);
     if (Number.isFinite(incomingRevision) && Number.isFinite(currentRevision) && incomingRevision < currentRevision) return;
+    const previousIndex = Number(this.queue?.current_index);
+    const previousTrackId = String(
+      this.queue?.current?.id || this.queue?.items?.[previousIndex]?.id || "",
+    );
     const samePlayer = !status.media_player || status.media_player === this.queue.media_player;
     const reportedVolume = status.player?.volume_pending
       ? undefined
@@ -633,9 +733,17 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       items: Array.isArray(status.items) ? status.items : [],
       revision: Number.isFinite(Number(status.revision)) ? Number(status.revision) : this.queue.revision || 0,
     };
+    const nextIndex = Number(this.queue.current_index);
+    const nextTrackId = String(
+      this.queue.current?.id || this.queue.items?.[nextIndex]?.id || "",
+    );
+    if (previousIndex !== nextIndex || previousTrackId !== nextTrackId) {
+      this._seekPreview = null;
+      const progress = this.shadowRoot?.querySelector(".progress-range");
+      if (progress) delete progress.dataset.localEditing;
+    }
     this._queueEpoch += 1;
     this._queueReceivedAt = Date.now();
-    this._seekPreview = null;
     this._renderQueueOnly();
     this._syncProgressTimer();
   }
@@ -769,9 +877,11 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   _renderCover(coverId, label, className = "") {
-    const holder = makeElement("span", { className: coverClassNames(className), label: `${voiceSafeText(label, "音乐")}封面` }, [
+    const safeLabel = voiceSafeText(label, "音乐");
+    const holder = makeElement("span", { className: coverClassNames(className), label: `${safeLabel}封面` }, [
       makeElement("span", { text: "♫" }),
     ]);
+    holder.dataset.coverLabel = safeLabel;
     const key = String(coverId || "");
     if (!key) return holder;
     holder.dataset.coverKey = key;
@@ -808,29 +918,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     }
     const activeFocusKey = String(this.shadowRoot.activeElement?.dataset?.focusKey || "");
     const replacement = this._renderQueue();
-    this._preserveQueueCovers(current, replacement);
-    current.replaceWith(replacement);
+    patchElement(current, replacement);
     this._focusByKey(activeFocusKey);
-  }
-
-  _preserveQueueCovers(current, replacement) {
-    const available = new Map();
-    for (const holder of replacement.querySelectorAll("[data-cover-key]")) {
-      const key = `${holder.dataset.coverKey}\u0000${holder.className}`;
-      const matches = available.get(key) || [];
-      matches.push(holder);
-      available.set(key, matches);
-    }
-    for (const holder of current.querySelectorAll("[data-cover-key]")) {
-      const key = `${holder.dataset.coverKey}\u0000${holder.className}`;
-      const target = available.get(key)?.shift();
-      if (target) {
-        const currentImage = holder.querySelector("img");
-        const nextImage = target.querySelector("img");
-        if (currentImage && nextImage) currentImage.alt = nextImage.alt;
-        target.replaceWith(holder);
-      }
-    }
   }
 
   _render() {
@@ -838,11 +927,13 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const activeFocusKey = String(this.shadowRoot.activeElement?.dataset?.focusKey || "");
     const app = makeElement("main", { className: "panel", dataset: { theme: this.themeMode } });
     app.append(this._renderHeader());
+    const noticeSlot = makeElement("div", { className: "notice-slot" });
     if (this.notice) {
-      app.append(makeElement("div", { className: `notice ${this.notice.error ? "notice-error" : ""}`, role: "status", text: this.notice.text }, [
+      noticeSlot.append(makeElement("div", { className: `notice ${this.notice.error ? "notice-error" : ""}`, role: "status", text: this.notice.text }, [
         button("关闭", () => { this.notice = ""; this._render(); }, { className: "notice-close" }),
       ]));
     }
+    app.append(noticeSlot);
     const layout = makeElement("div", { className: "layout" });
     const library = this._renderLibrary();
     const queue = this._renderQueue();
@@ -850,9 +941,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     layout.append(library, queue);
     app.append(layout);
     if (this.detail) app.append(this._renderDetail());
-    // Keep the cached async stylesheet node when replacing the application tree.
-    const style = this.shadowRoot.querySelector("style[data-xiaoai-panel]");
-    this.shadowRoot.replaceChildren(...(style ? [style, app] : [app]));
+    const current = this.shadowRoot.querySelector("main.panel");
+    if (current) patchElement(current, app);
+    else this.shadowRoot.append(app);
     this._focusByKey(activeFocusKey);
   }
 
@@ -1140,17 +1231,22 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       dataset: { focusKey: "player-progress" },
       on: {
         input: (event) => {
+          event.currentTarget.dataset.localEditing = "true";
           this._seekPreview = Number(event.currentTarget.value);
           updateRangeFill(event.currentTarget);
           const elapsed = event.currentTarget.parentElement?.querySelector(".progress-elapsed");
           if (elapsed) elapsed.textContent = formatDuration(this._seekPreview);
         },
         change: (event) => {
+          delete event.currentTarget.dataset.localEditing;
           const target = Number(event.currentTarget.value);
           this._seekPreview = null;
           this._queueCommand("player_control", { action: "seek", position: target });
         },
-        blur: () => { this._seekPreview = null; },
+        blur: (event) => {
+          delete event.currentTarget.dataset.localEditing;
+          this._seekPreview = null;
+        },
       },
     });
     updateRangeFill(range);
@@ -1181,11 +1277,16 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       dataset: { focusKey: "player-volume" },
       on: {
         input: (event) => {
+          event.currentTarget.dataset.localEditing = "true";
           updateRangeFill(event.currentTarget);
           const value = event.currentTarget.parentElement?.querySelector(".volume-value");
           if (value) value.textContent = `${event.currentTarget.value}%`;
         },
-        change: (event) => this._setVolume(Number(event.currentTarget.value) / 100),
+        change: (event) => {
+          delete event.currentTarget.dataset.localEditing;
+          this._setVolume(Number(event.currentTarget.value) / 100);
+        },
+        blur: (event) => { delete event.currentTarget.dataset.localEditing; },
       },
     });
     updateRangeFill(range);

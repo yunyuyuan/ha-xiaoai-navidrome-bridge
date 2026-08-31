@@ -55,9 +55,9 @@ Panel 只列出同时支持以下能力的 `media_player`：
 
 ## 状态与并发
 
-Panel 首次载入时读取队列快照，随后订阅实时队列事件。所选播放器的状态、音量和进度属性也由 Home Assistant `state_changed` 事件推送到相同订阅，不轮询播放器。播放期间，Panel 只在浏览器内根据最近的 HA 位置时间戳平滑显示秒数；拖动进度后仍由 Home Assistant 实体执行实际跳转。音量命令在等待实体状态事件确认期间保留目标值，避免旧属性造成滑杆回弹。[3] [4]
+Panel 首次载入时读取队列快照，随后订阅实时队列事件。所选播放器的状态、音量和进度属性也由 Home Assistant `state_changed` 事件推送到相同订阅，不轮询播放器。播放期间，Panel 只在浏览器内根据最近的 HA 位置时间戳平滑显示秒数；拖动进度后仍由 Home Assistant 实体执行实际跳转。拖动会话中的进度预览持续到 `change`、失焦或当前曲目改变，不会被同曲目的状态事件和秒级显示计时器覆盖。音量命令在等待实体状态事件确认期间保留目标值，避免旧属性造成滑杆回弹。[3] [4]
 
-队列与播放器事件只替换右侧队列区域，不重建曲库或歌单；更新前会按封面标识和用途把原 CD、队列封面 DOM 节点移入新区域，其余封面同步复用有界对象 URL 缓存。Home Assistant 重复设置相同的 `narrow`、`hass` 或 Panel 配置时保持现有 Shadow DOM 节点，从而避免控制操作引起的整页和封面闪烁。
+Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素转发变化的属性，不会重新创建元素。[1] [5] Panel 的全部渲染路径都在现有 DOM 上逐项同步属性、文本、事件处理器和控件状态；队列事件、通知、主题和数据刷新不会替换根树、队列容器、CD、按钮、滑杆或封面标识相同的图片节点。Home Assistant 重复设置相同的 `narrow`、`hass` 或 Panel 配置时同样保持现有 Shadow DOM 节点。
 
 每个变更命令携带当前 `expected_revision`。如果语音、自动推进或另一个浏览器页面已经修改队列，服务端拒绝过期命令，Panel 获取最新状态后再允许后续操作。
 
@@ -65,7 +65,7 @@ Panel 首次载入时读取队列快照，随后订阅实时队列事件。所�
 
 ## 封面与详情
 
-浏览器不直接访问带 Subsonic 凭据的 Navidrome URL。Panel 使用 HA 鉴权封面代理，代理只接受有限长度的封面 ID，限制响应体大小，并向 Navidrome 请求适合界面的缩略图。浏览器将响应读取为 Blob，并用有界对象 URL 缓存减少重复请求。
+浏览器不直接访问带 Subsonic 凭据的 Navidrome URL。Panel 使用 HA 鉴权封面代理，代理只接受有限长度的封面 ID，限制响应体大小，并向 Navidrome 请求适合界面的缩略图。浏览器将响应读取为 Blob，并用有界对象 URL 缓存减少重复请求；数量上限覆盖默认完整队列，内存仍受总字节上限约束。
 
 所有曲目、歌手、专辑和错误文本均通过 DOM `textContent` 写入，不将 Navidrome 元数据作为 HTML 解析。
 
@@ -95,3 +95,4 @@ Panel 首次载入时读取队列快照，随后订阅实时队列事件。所�
 [2]: https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/ "Home Assistant frontend hass object and WebSocket API"
 [3]: https://developers.home-assistant.io/docs/core/entity/media-player/ "Home Assistant media player entity features"
 [4]: https://developers.home-assistant.io/docs/integration_listen_events/ "Home Assistant event subscriptions"
+[5]: https://github.com/home-assistant/frontend/blob/e09c4084b71b53d12858c3051559855fe0ce366c/src/panels/custom/ha-panel-custom.ts "Home Assistant custom panel container source"

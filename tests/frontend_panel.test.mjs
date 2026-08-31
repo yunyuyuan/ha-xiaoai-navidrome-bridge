@@ -132,6 +132,8 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   );
   assert.equal(source.includes('className: "track-primary"'), true);
   assert.equal(source.includes('className: "playlist-cover-button"'), true);
+  assert.equal(source.includes("patchElement(current, replacement)"), true);
+  assert.equal(source.includes("this.shadowRoot.replaceChildren"), false);
   assert.equal(source.includes("this.playlistTrackOffset + index"), true);
   assert.equal(source.includes('button("播放全部"'), false);
   assert.equal(source.includes('button("下一首播放"'), false);
@@ -290,22 +292,62 @@ const panel = document.createElement("xiaoai-navidrome-panel");
 document.body.append(panel);
 panel.libraryTab = "playlists";
 panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1 }];
+panel._covers.peek = () => "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
 panel.queue = {
   ...panel.queue,
   state: "playing",
   current_index: 0,
   current: { id: "track-one", title: "Synthetic Track", cover_art: "cover-one", duration: 180 },
   items: [{ id: "track-one", title: "Synthetic Track", cover_art: "cover-one", duration: 180 }],
-  player: { volume_level: 0.4 },
+  player: { volume_level: 0.4, supports_seek: true, duration: 180 },
 };
 panel._render();
+const mainBefore = panel.shadowRoot.querySelector("main.panel");
 const libraryBefore = panel.shadowRoot.querySelector(".library-pane");
 const queueBefore = panel.shadowRoot.querySelector(".queue-pane");
 const discCoverBefore = panel.shadowRoot.querySelector(".disc-cover");
 const queueCoverBefore = panel.shadowRoot.querySelector(".queue-cover");
-panel._applyQueue({ ...panel.queue, position: 1, player: { volume_level: 0.4 } });
-const localQueueRefresh = panel.shadowRoot.querySelector(".library-pane") === libraryBefore && panel.shadowRoot.querySelector(".queue-pane") !== queueBefore;
-const coversStable = panel.shadowRoot.querySelector(".disc-cover") === discCoverBefore && panel.shadowRoot.querySelector(".queue-cover") === queueCoverBefore;
+const discImageBefore = discCoverBefore.querySelector("img");
+const queueImageBefore = queueCoverBefore.querySelector("img");
+const previousBefore = panel.shadowRoot.querySelector('[data-focus-key="player-previous"]');
+const toggleBefore = panel.shadowRoot.querySelector('[data-focus-key="player-toggle"]');
+const progressBefore = panel.shadowRoot.querySelector(".progress-range");
+progressBefore.value = "70";
+progressBefore.focus();
+progressBefore.dispatchEvent(new Event("input", { bubbles: true }));
+panel._applyQueue({ ...panel.queue, position: 6 });
+await new Promise((resolve) => setTimeout(resolve, 1200));
+const activeRangeStable = progressBefore.value === "70"
+  && Math.abs(Number.parseFloat(progressBefore.style.getPropertyValue("--range-progress")) - (70 / 180 * 100)) < 0.001
+  && panel._seekPreview === 70
+  && progressBefore.dataset.localEditing === "true";
+panel._applyQueue({ ...panel.queue, state: "stopped", position: 7 });
+const localQueueRefresh = panel.shadowRoot.querySelector(".library-pane") === libraryBefore && panel.shadowRoot.querySelector(".queue-pane") === queueBefore;
+const coversStable = panel.shadowRoot.querySelector(".disc-cover") === discCoverBefore
+  && panel.shadowRoot.querySelector(".queue-cover") === queueCoverBefore
+  && panel.shadowRoot.querySelector(".disc-cover img") === discImageBefore
+  && panel.shadowRoot.querySelector(".queue-cover img") === queueImageBefore;
+const controlsStable = panel.shadowRoot.querySelector('[data-focus-key="player-previous"]') === previousBefore
+  && panel.shadowRoot.querySelector('[data-focus-key="player-toggle"]') === toggleBefore
+  && panel.shadowRoot.querySelector(".progress-range") === progressBefore;
+const statePatched = panel.shadowRoot.querySelector(".player-state")?.textContent === "准备播放"
+  && !panel.shadowRoot.querySelector(".disc")?.classList.contains("disc-spinning");
+panel.themeMode = "dark";
+panel.notice = { text: "Synthetic Notice", error: false };
+panel._render();
+const fullTreeStable = panel.shadowRoot.querySelector("main.panel") === mainBefore
+  && panel.shadowRoot.querySelector(".library-pane") === libraryBefore
+  && panel.shadowRoot.querySelector(".queue-pane") === queueBefore
+  && panel.shadowRoot.querySelector(".disc-cover img") === discImageBefore
+  && panel.shadowRoot.querySelector(".notice")?.textContent.includes("Synthetic Notice")
+  && mainBefore.dataset.theme === "dark";
+panel.notice = "";
+panel._render();
+progressBefore.blur();
+panel._applyQueue({ ...panel.queue, position: 20 });
+const settledRangePatched = progressBefore.value === "20"
+  && panel._seekPreview === null
+  && progressBefore.dataset.localEditing === undefined;
 panel.entryId = "synthetic-entry";
 panel._initializedEntry = "synthetic-entry";
 panel.narrow = true;
@@ -314,6 +356,7 @@ panel.hass = { connection: {} };
 panel.panel = { config: { entry_id: "synthetic-entry" } };
 const haPropertiesStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
 let playlistCommand = null;
+let transportAction = null;
 panel._call = async (command, fields = {}) => {
   if (command === "playlist_tracks") return {
     items: [
@@ -323,8 +366,12 @@ panel._call = async (command, fields = {}) => {
     total: 2,
   };
   if (command === "queue_playlist") playlistCommand = fields;
+  if (command === "queue_control") transportAction = fields.action;
   return { ...panel.queue, revision: Number(panel.queue.revision || 0) + 1 };
 };
+toggleBefore.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const listenerPatched = transportAction === "play";
 const mode = panel.shadowRoot.querySelector(".mode-button");
 mode.focus();
 mode.click();
@@ -342,7 +389,7 @@ const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" &&
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = localQueueRefresh && coversStable && haPropertiesStable && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`local=\${localQueueRefresh};covers=\${coversStable};props=\${haPropertiesStable};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
+document.body.dataset.focusResult = localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {
@@ -352,7 +399,7 @@ document.body.dataset.focusResult = localQueueRefresh && coversStable && haPrope
       "--no-sandbox",
       "--disable-gpu",
       "--dump-dom",
-      "--virtual-time-budget=1000",
+      "--virtual-time-budget=2500",
       new URL(`file://${fixture}`).href,
     ], { maxBuffer: 4 * 1024 * 1024, timeout: 15000 });
     assert.match(stdout, /data-focus-result="pass"/, stdout);
