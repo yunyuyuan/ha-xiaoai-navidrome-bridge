@@ -142,6 +142,8 @@ async def test_native_resume_volume_mute_and_seek(
 
     volume = await queue.async_set_volume(0.6, expected_revision=resumed["revision"])
     assert volume["player"]["supports_volume_set"] is True
+    assert volume["player"]["volume_level"] == 0.6
+    assert volume["player"]["volume_pending"] is True
     assert queue.test_calls[-1] == (  # type: ignore[attr-defined]
         "volume_set",
         {"entity_id": PLAYER, "volume_level": 0.6},

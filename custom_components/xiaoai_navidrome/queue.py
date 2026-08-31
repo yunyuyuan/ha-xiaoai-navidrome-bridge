@@ -549,8 +549,10 @@ class PlaybackQueue:
                 },
                 context,
             )
-            self._notify()
-            return self.status()
+            status = self.status()
+            status["player"]["volume_level"] = volume_level
+            status["player"]["volume_pending"] = True
+            return status
 
     async def async_set_muted(
         self,

@@ -18,6 +18,8 @@ const {
   nextPlaybackMode,
   playbackMode,
   queueStatus,
+  rangeFillPercent,
+  reconcilePendingVolume,
   responseItems,
   trackPrimaryCommand,
   voiceSafeText,
@@ -43,6 +45,22 @@ test("formatDuration produces stable compact timestamps", () => {
   assert.equal(formatDuration(0), "0:00");
   assert.equal(formatDuration(65.9), "1:05");
   assert.equal(formatDuration(-1), "0:00");
+});
+
+test("range fill and optimistic volume reconciliation are bounded", () => {
+  assert.equal(rangeFillPercent(25, 100), 25);
+  assert.equal(rangeFillPercent(200, 100), 100);
+  assert.equal(rangeFillPercent(-1, 100), 0);
+  assert.equal(rangeFillPercent(1, 0), 0);
+
+  const pending = { value: 0.42, expiresAt: 2000 };
+  assert.equal(reconcilePendingVolume(pending, 0.7, 1000), pending);
+  assert.equal(reconcilePendingVolume(pending, undefined, 1000), pending);
+  assert.equal(reconcilePendingVolume(pending, 0.4, 1000), pending);
+  assert.equal(reconcilePendingVolume(pending, 0.42, 1000), null);
+  assert.equal(reconcilePendingVolume(pending, 0.7, 2000), null);
+  const smallChange = { value: 0.52, expiresAt: 2000 };
+  assert.equal(reconcilePendingVolume(smallChange, 0.5, 1000), smallChange);
 });
 
 test("cover requests use one relative authenticated Home Assistant path", async () => {
@@ -130,9 +148,55 @@ test("player uses a rotating disc, icon controls, ranges, and one mode button", 
   assert.equal(source.includes('className: "volume-range"'), true);
   assert.equal(source.includes('this._queueCommand("player_control"'), true);
   assert.equal(source.includes('className: "now-playing"'), false);
+  assert.equal(source.includes("Material Design Icons 7.4.47"), true);
+  assert.equal(source.includes("M17,3L22.25,7.5L17,12"), true);
+  assert.equal(source.includes("M6,19A2,2 0 0,0 8,21H16"), true);
   assert.match(css, /@keyframes disc-spin/);
-  assert.match(css, /\.mode-button\[data-mode="one"\]::after/);
+  assert.doesNotMatch(css, /\.mode-button\[data-mode="one"\]::after/);
+  assert.match(css, /::-webkit-slider-runnable-track/);
+  assert.match(css, /--range-progress/);
+  assert.match(css, /\.transport-main:hover[^}]+background: var\(--x-primary\)/);
   assert.match(css, /prefers-reduced-motion:[^}]+animation: none/s);
+});
+
+test("queue state updates preserve pending volume and use a local pane refresh", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let queueRenders = 0;
+  let timerSyncs = 0;
+  Object.assign(panel, {
+    queue: {
+      items: [],
+      current_index: -1,
+      revision: 4,
+      media_player: "media_player.synthetic",
+      player: { volume_level: 0.7 },
+    },
+    _pendingVolume: { value: 0.3, expiresAt: Date.now() + 10000 },
+    _volumeConfirmTimer: null,
+    _queueEpoch: 0,
+    _renderQueueOnly: () => { queueRenders += 1; },
+    _syncProgressTimer: () => { timerSyncs += 1; },
+  });
+  panel._applyQueue({
+    items: [],
+    current_index: -1,
+    revision: 4,
+    media_player: "media_player.synthetic",
+    player: { volume_level: 0.7 },
+  });
+  assert.equal(panel._pendingVolume.value, 0.3);
+  assert.equal(queueRenders, 1);
+  assert.equal(timerSyncs, 1);
+
+  panel._applyQueue({
+    items: [],
+    current_index: -1,
+    revision: 4,
+    media_player: "media_player.synthetic",
+    player: { volume_level: 0.3 },
+  });
+  assert.equal(panel._pendingVolume, null);
+  assert.equal(queueRenders, 2);
 });
 
 test("playlist navigation restores stable focus keys without retaining DOM nodes", async () => {
@@ -205,6 +269,10 @@ document.body.append(panel);
 panel.libraryTab = "playlists";
 panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1 }];
 panel._render();
+const libraryBefore = panel.shadowRoot.querySelector(".library-pane");
+const queueBefore = panel.shadowRoot.querySelector(".queue-pane");
+panel._applyQueue({ ...panel.queue, items: [], player: { volume_level: 0.4 } });
+const localQueueRefresh = panel.shadowRoot.querySelector(".library-pane") === libraryBefore && panel.shadowRoot.querySelector(".queue-pane") !== queueBefore;
 const mode = panel.shadowRoot.querySelector(".mode-button");
 mode.focus();
 mode.click();
@@ -218,7 +286,7 @@ const entered = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-b
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = playerControlPreserved && entered && returned ? "pass" : \`control=\${playerControlPreserved};entered=\${entered};returned=\${returned}\`;
+document.body.dataset.focusResult = localQueueRefresh && playerControlPreserved && entered && returned ? "pass" : \`local=\${localQueueRefresh};control=\${playerControlPreserved};entered=\${entered};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

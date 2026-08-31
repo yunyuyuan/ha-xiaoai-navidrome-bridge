@@ -109,7 +109,7 @@ Config Flow 第一页的 **Navidrome 地址** 是 Home Assistant 调用 API 的�
 
 ### 原生侧栏 Panel
 
-Panel 支持曲库和歌单分页、搜索、封面与详情，以及带旋转 CD 的完整播放器。上一首、播放/暂停、下一首、播放模式和清空队列使用图标按钮；音量、静音与进度拖动按照当前 Home Assistant `media_player` 公布的能力动态启用。移动端把播放器和队列放在曲库上方；主题可以跟随 Home Assistant，也可固定为日间或夜间。
+Panel 支持曲库和歌单分页、搜索、封面与详情，以及带旋转 CD 的完整播放器。上一首、播放/暂停、下一首、播放模式和清空队列使用 Material Design Icons 图标按钮；音量、静音与进度拖动按照当前 Home Assistant `media_player` 公布的能力动态启用，不支持原生 `SEEK` 时进度条保持只读。队列和播放器事件只更新右侧区域，并复用封面缓存，操作时不会重建整个页面。移动端把播放器和队列放在曲库上方；主题可以跟随 Home Assistant，也可固定为日间或夜间。
 
 | Panel 操作 | 行为 |
 |---|---|

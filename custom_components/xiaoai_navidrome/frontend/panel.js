@@ -5,6 +5,7 @@ const PAGE_SIZE = 30;
 const COVER_CACHE_ITEMS = 48;
 const COVER_CACHE_BYTES = 32 * 1024 * 1024;
 const COVER_CONCURRENCY = 6;
+const VOLUME_CONFIRM_TIMEOUT = 10000;
 const STATIC_VERSION = new URL(import.meta.url).search;
 let stylesheetPromise;
 
@@ -67,6 +68,25 @@ export function formatDuration(value) {
   const minutes = Math.floor(seconds / 60);
   const remainder = Math.floor(seconds % 60);
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+/** Return a clamped percentage for a custom range-track fill. */
+export function rangeFillPercent(value, maximum) {
+  const max = Math.max(0, Number(maximum) || 0);
+  if (!max) return 0;
+  return Math.max(0, Math.min(100, ((Number(value) || 0) / max) * 100));
+}
+
+/** Keep an optimistic volume until HA confirms it or the bounded wait expires. */
+export function reconcilePendingVolume(pending, reported, now = Date.now()) {
+  if (!pending || now >= Number(pending.expiresAt || 0)) return null;
+  const actual = reported === null || reported === undefined ? NaN : Number(reported);
+  if (Number.isFinite(actual) && Math.abs(actual - Number(pending.value)) <= 0.005) return null;
+  return pending;
+}
+
+function updateRangeFill(range) {
+  range.style.setProperty("--range-progress", `${rangeFillPercent(range.value, range.max)}%`);
 }
 
 /** Return the relative authenticated Home Assistant cover endpoint. */
@@ -164,17 +184,19 @@ function makeElement(tag, options = {}, children = []) {
   return node;
 }
 
+// Material Design Icons 7.4.47 (Apache-2.0):
+// https://github.com/Templarian/MaterialDesign-JS
 const ICON_PATHS = Object.freeze({
-  previous: "M6 5h2v14H6zm12.5 1.5v11L10 12z",
-  next: "M16 5h2v14h-2zM5.5 6.5 14 12l-8.5 5.5z",
-  play: "M8 5v14l11-7z",
-  pause: "M7 5h4v14H7zm6 0h4v14h-4z",
-  sequence: "M7 7h11l-2.5-2.5L17 3l5 5-5 5-1.5-1.5L18 9H7a3 3 0 0 0-3 3H2a5 5 0 0 1 5-5zm10 8a3 3 0 0 0 3-3h2a5 5 0 0 1-5 5H6l2.5 2.5L7 21l-5-5 5-5 1.5 1.5L6 15z",
-  shuffle: "M16.5 3.5 22 9l-5.5 5.5-1.4-1.4L18.2 10h-2.1a4 4 0 0 1-3.6-2.2l-1.1-2.2A2 2 0 0 0 9.6 4.5H3v-2h6.6a4 4 0 0 1 3.6 2.2l1.1 2.2a2 2 0 0 0 1.8 1.1h2.1l-3.1-3.1zm-7 8.7 1.4 1.4-1.7 3.3a4 4 0 0 1-3.6 2.2H3v-2h2.6a2 2 0 0 0 1.8-1.1zm7 2.3L22 20l-5.5 5.5-1.4-1.4 3.1-3.1h-2.1a4 4 0 0 1-3.6-2.2l-.6-1.2 1.4-1.4 1 1.7a2 2 0 0 0 1.8 1.1h2.1l-3.1-3.1z",
-  one: "M7 7h11l-2.5-2.5L17 3l5 5-5 5-1.5-1.5L18 9H7a3 3 0 0 0-3 3H2a5 5 0 0 1 5-5zm10 8a3 3 0 0 0 3-3h2a5 5 0 0 1-5 5H6l2.5 2.5L7 21l-5-5 5-5 1.5 1.5L6 15zm-5-4h2v6h-2v-4h-1v-1z",
-  volume: "M4 10v4h4l5 4V6L8 10zm11.5-.5a4 4 0 0 1 0 5l1.5 1.3a6 6 0 0 0 0-7.6zm2.8-2.7a8 8 0 0 1 0 10.4l1.5 1.3a10 10 0 0 0 0-13z",
-  muted: "M4 10v4h4l5 4V6L8 10zm11.4-.8L17.2 11l1.8-1.8 1.4 1.4-1.8 1.8 1.8 1.8-1.4 1.4-1.8-1.8-1.8 1.8-1.4-1.4 1.8-1.8-1.8-1.8z",
-  trash: "M8 7h8l-.6 13H8.6zM9 4h6l1 2H8zm-3 2h12v2H6z",
+  previous: "M6,18V6H8V18H6M9.5,12L18,6V18L9.5,12Z",
+  next: "M16,18H18V6H16M6,18L14.5,12L6,6V18Z",
+  play: "M8,5.14V19.14L19,12.14L8,5.14Z",
+  pause: "M14,19H18V5H14M6,19H10V5H6V19Z",
+  sequence: "M17,17H7V14L3,18L7,22V19H19V13H17M7,7H17V10L21,6L17,2V5H5V11H7V7Z",
+  shuffle: "M17,3L22.25,7.5L17,12L22.25,16.5L17,21V18H14.26L11.44,15.18L13.56,13.06L15.5,15H17V12L17,9H15.5L6.5,18H2V15H5.26L14.26,6H17V3M2,6H6.5L9.32,8.82L7.2,10.94L5.26,9H2V6Z",
+  one: "M13,15V9H12L10,10V11H11.5V15M17,17H7V14L3,18L7,22V19H19V13H17M7,7H17V10L21,6L17,2V5H5V11H7V7Z",
+  volume: "M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z",
+  muted: "M12,4L9.91,6.09L12,8.18M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.53C15.58,18.04 14.83,18.46 14,18.7V20.77C15.38,20.45 16.63,19.82 17.68,18.96L19.73,21L21,19.73L12,10.73M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.62,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12Z",
+  trash: "M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19M8,9H16V19H8V9M15.5,4L14.5,3H9.5L8.5,4H5V6H19V4H15.5Z",
 });
 
 function icon(name) {
@@ -228,6 +250,15 @@ class CoverStore {
     this.active = 0;
     this.bytes = 0;
     this.closed = false;
+  }
+
+  peek(coverId) {
+    const id = String(coverId || "");
+    const existing = id && !this.closed ? this.entries.get(id) : null;
+    if (!existing) return null;
+    this.entries.delete(id);
+    this.entries.set(id, existing);
+    return existing.url || null;
   }
 
   get(coverId) {
@@ -372,6 +403,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._queueReceivedAt = Date.now();
     this._progressTimer = null;
     this._seekPreview = null;
+    this._pendingVolume = null;
+    this._volumeConfirmTimer = null;
     this._initializedEntry = "";
     this._initializing = false;
     this._covers = new CoverStore(this);
@@ -394,6 +427,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     if (nextEntry !== this.entryId) {
       this.entryId = nextEntry;
       this._initializedEntry = "";
+      if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
+      this._volumeConfirmTimer = null;
+      this._pendingVolume = null;
       this._covers.clear();
       this._covers = new CoverStore(this);
       if (this._unsubscribeQueue) this._unsubscribeQueue();
@@ -443,6 +479,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._unsubscribeQueue = null;
     if (this._progressTimer) clearInterval(this._progressTimer);
     this._progressTimer = null;
+    if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
+    this._volumeConfirmTimer = null;
+    this._pendingVolume = null;
     this._covers.clear();
   }
 
@@ -570,6 +609,17 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const incomingRevision = Number(status?.revision);
     const currentRevision = Number(this.queue?.revision);
     if (Number.isFinite(incomingRevision) && Number.isFinite(currentRevision) && incomingRevision < currentRevision) return;
+    const samePlayer = !status.media_player || status.media_player === this.queue.media_player;
+    const reportedVolume = status.player?.volume_pending
+      ? undefined
+      : status.player?.volume_level;
+    this._pendingVolume = samePlayer
+      ? reconcilePendingVolume(this._pendingVolume, reportedVolume)
+      : null;
+    if (!this._pendingVolume && this._volumeConfirmTimer) {
+      clearTimeout(this._volumeConfirmTimer);
+      this._volumeConfirmTimer = null;
+    }
     this.queue = {
       ...this.queue,
       ...status,
@@ -579,7 +629,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._queueEpoch += 1;
     this._queueReceivedAt = Date.now();
     this._seekPreview = null;
-    this._render();
+    this._renderQueueOnly();
     this._syncProgressTimer();
   }
 
@@ -718,6 +768,17 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const key = String(coverId || "");
     if (!key) return holder;
     holder.dataset.coverKey = key;
+    const cachedUrl = this._covers.peek(key);
+    if (cachedUrl) {
+      const image = document.createElement("img");
+      image.alt = voiceSafeText(label, "音乐封面");
+      image.src = cachedUrl;
+      image.loading = "lazy";
+      image.addEventListener("error", () => image.remove());
+      holder.replaceChildren(image);
+      holder.classList.remove("cover-placeholder");
+      return holder;
+    }
     this._covers.get(key).then((url) => {
       if (!url || !this._connected || holder.dataset.coverKey !== key || !holder.isConnected) return;
       const image = document.createElement("img");
@@ -729,6 +790,18 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       holder.classList.remove("cover-placeholder");
     });
     return holder;
+  }
+
+  _renderQueueOnly() {
+    if (!this.shadowRoot || typeof document === "undefined") return;
+    const current = this.shadowRoot.querySelector(".queue-pane");
+    if (!current) {
+      this._render();
+      return;
+    }
+    const activeFocusKey = String(this.shadowRoot.activeElement?.dataset?.focusKey || "");
+    current.replaceWith(this._renderQueue());
+    this._focusByKey(activeFocusKey);
   }
 
   _render() {
@@ -1029,7 +1102,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const range = makeElement("input", {
       type: "range",
       className: "progress-range",
-      label: "播放进度",
+      label: canSeek ? "播放进度" : "播放进度，当前播放设备不支持拖动",
+      title: canSeek ? "拖动播放进度" : "当前播放设备不支持进度跳转",
       min: 0,
       max: Math.max(1, Math.floor(duration)),
       step: 1,
@@ -1039,6 +1113,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       on: {
         input: (event) => {
           this._seekPreview = Number(event.currentTarget.value);
+          updateRangeFill(event.currentTarget);
           const elapsed = event.currentTarget.parentElement?.querySelector(".progress-elapsed");
           if (elapsed) elapsed.textContent = formatDuration(this._seekPreview);
         },
@@ -1050,6 +1125,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
         blur: () => { this._seekPreview = null; },
       },
     });
+    updateRangeFill(range);
     return makeElement("div", { className: "progress-control" }, [
       range,
       makeElement("div", { className: "progress-times" }, [
@@ -1063,7 +1139,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const canSet = Boolean(player?.supports_volume_set);
     const canMute = Boolean(player?.supports_volume_mute);
     const muted = Boolean(player?.is_volume_muted);
-    const volume = Math.round(Math.max(0, Math.min(1, Number(player?.volume_level) || 0)) * 100);
+    const level = this._pendingVolume?.value ?? player?.volume_level;
+    const volume = Math.round(Math.max(0, Math.min(1, Number(level) || 0)) * 100);
     const range = makeElement("input", {
       type: "range",
       className: "volume-range",
@@ -1076,15 +1153,14 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       dataset: { focusKey: "player-volume" },
       on: {
         input: (event) => {
+          updateRangeFill(event.currentTarget);
           const value = event.currentTarget.parentElement?.querySelector(".volume-value");
           if (value) value.textContent = `${event.currentTarget.value}%`;
         },
-        change: (event) => this._queueCommand("player_control", {
-          action: "volume_set",
-          volume_level: Number(event.currentTarget.value) / 100,
-        }),
+        change: (event) => this._setVolume(Number(event.currentTarget.value) / 100),
       },
     });
+    updateRangeFill(range);
     return makeElement("div", { className: "volume-control" }, [
       iconButton(muted ? "muted" : "volume", muted ? "取消静音" : "静音", () => this._queueCommand("player_control", {
         action: "volume_mute",
@@ -1093,6 +1169,30 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       range,
       makeElement("span", { className: "volume-value", text: canSet ? `${volume}%` : "--" }),
     ]);
+  }
+
+  _setVolume(volumeLevel) {
+    const level = Math.max(0, Math.min(1, Number(volumeLevel) || 0));
+    const pending = { value: level, expiresAt: Date.now() + VOLUME_CONFIRM_TIMEOUT };
+    this._pendingVolume = pending;
+    if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
+    this._volumeConfirmTimer = setTimeout(() => {
+      if (this._pendingVolume !== pending) return;
+      this._pendingVolume = null;
+      this._volumeConfirmTimer = null;
+      this._renderQueueOnly();
+    }, VOLUME_CONFIRM_TIMEOUT);
+    return this._queueCommand("player_control", {
+      action: "volume_set",
+      volume_level: level,
+    }).then((result) => {
+      if (result !== null || this._pendingVolume !== pending) return result;
+      this._pendingVolume = null;
+      if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
+      this._volumeConfirmTimer = null;
+      this._renderQueueOnly();
+      return result;
+    });
   }
 
   _syncProgressTimer() {
@@ -1108,6 +1208,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       if (!range || this._seekPreview !== null) return;
       const position = this._displayPosition();
       range.value = String(Math.min(Number(range.max) || position, position));
+      updateRangeFill(range);
       const elapsed = this.shadowRoot?.querySelector(".progress-elapsed");
       if (elapsed) elapsed.textContent = formatDuration(position);
     }, 1000);
