@@ -192,6 +192,7 @@ async def websocket_queue_add(
             vol.Required("playlist_id"): _IDENTIFIER,
             vol.Required("position"): vol.In({"replace", "next", "last"}),
             vol.Optional("start_track_id", default=""): vol.All(cv.string, vol.Length(max=512)),
+            vol.Optional("start_index"): vol.All(vol.Coerce(int), vol.Range(min=0, max=4999)),
             vol.Optional("expected_revision"): vol.Coerce(int),
         },
     )
@@ -205,6 +206,7 @@ async def websocket_queue_playlist(
         msg["playlist_id"],
         msg["position"],
         start_track_id=msg["start_track_id"],
+        start_index=msg.get("start_index"),
         expected_revision=msg.get("expected_revision"),
         context=connection.context(msg),
     )

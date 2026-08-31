@@ -283,14 +283,17 @@ class PlaybackQueue:
         tracks: Sequence[Track],
         *,
         media_player: str | None = None,
+        first_track_index: int | None = None,
         expected_revision: int | None = None,
         context: Context | None = None,
     ) -> dict[str, Any]:
-        """Replace the queue and start its first item."""
+        """Replace the queue and keep the requested occurrence before shuffled followers."""
         async with self._operation_lock:
             self._ensure_open()
             self._check_revision(expected_revision)
             self._validate_track_count(len(tracks))
+            if first_track_index is not None and not 0 <= first_track_index < len(tracks):
+                raise QueueError("The requested first track index is outside the playlist")
             target_player = media_player or self.media_player
             if media_player:
                 self._validate_player(media_player)
@@ -305,9 +308,16 @@ class PlaybackQueue:
             self._cancel_timer()
             self._cancel_idle_confirmation()
             self.items = list(tracks)
+            if first_track_index:
+                self.items = self.items[first_track_index:] + self.items[:first_track_index]
             self._invalidate_stream_cache()
             if self.shuffle:
-                random.SystemRandom().shuffle(self.items)
+                if first_track_index is None:
+                    random.SystemRandom().shuffle(self.items)
+                else:
+                    followers = self.items[1:]
+                    random.SystemRandom().shuffle(followers)
+                    self.items[1:] = followers
             self.current_index = 0
             self._set_loading()
             self.last_error = ""

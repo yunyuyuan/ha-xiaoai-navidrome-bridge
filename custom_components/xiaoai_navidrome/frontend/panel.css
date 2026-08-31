@@ -360,7 +360,6 @@ h2 { font-size: 17px; }
   .header { border-radius: 14px; }
   .library-pane, .queue-pane { border-radius: 14px; }
   .playlist-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .subheading .primary, .subheading .secondary { flex: 1 1 130px; }
   .queue-list { max-height: 270px; }
   .queue-row { grid-template-columns: 17px 31px minmax(0, 1fr) 40px; gap: 6px; }
 }

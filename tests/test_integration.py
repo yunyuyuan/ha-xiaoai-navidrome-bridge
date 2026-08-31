@@ -286,6 +286,58 @@ async def test_panel_registration_failure_closes_unpublished_runtime(
     assert DOMAIN not in hass.data or entry.entry_id not in hass.data[DOMAIN]["entries"]
 
 
+async def test_playlist_start_occurrence_is_forwarded_to_shuffled_queue(
+    hass: HomeAssistant,
+) -> None:
+    """A playlist click forwards the exact selected occurrence to the queue."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        entry_id="synthetic-playlist-entry",
+        data=ENTRY_DATA,
+        options=ENTRY_OPTIONS,
+    )
+    runtime = XiaoAINavidromeRuntime(hass, entry)
+    playlist_tracks = [
+        Track("track-a", title="Synthetic First", duration=300),
+        Track("track-b", duration=300),
+        Track("track-a", title="Synthetic Selected", duration=300),
+        Track("track-c", duration=300),
+    ]
+    runtime.navidrome.async_playlist_tracks = AsyncMock(return_value=playlist_tracks)
+    runtime.queue.async_replace = AsyncMock(
+        return_value={"current": {"id": "track-a", "title": "Synthetic Selected"}}
+    )
+
+    result = await runtime.async_add_playlist(
+        "playlist-one",
+        "replace",
+        start_track_id="track-a",
+        start_index=2,
+        expected_revision=7,
+        context=None,
+    )
+
+    assert result["current"]["title"] == "Synthetic Selected"
+    runtime.queue.async_replace.assert_awaited_once_with(
+        playlist_tracks,
+        first_track_index=2,
+        expected_revision=7,
+        context=None,
+    )
+    runtime.queue.async_replace.reset_mock()
+    with pytest.raises(HomeAssistantError, match="playlist item has changed"):
+        await runtime.async_add_playlist(
+            "playlist-one",
+            "replace",
+            start_track_id="track-a",
+            start_index=1,
+            expected_revision=7,
+            context=None,
+        )
+    runtime.queue.async_replace.assert_not_awaited()
+    await runtime.async_close()
+
+
 async def test_manual_sync_is_cancelled_before_runtime_reload(
     hass: HomeAssistant,
 ) -> None:

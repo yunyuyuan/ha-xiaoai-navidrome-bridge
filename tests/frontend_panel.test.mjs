@@ -110,15 +110,17 @@ test("track primary targets select context-appropriate playback mutations", () =
     command: "queue_add",
     fields: { track_ids: ["track-one"], position: "replace" },
   });
-  assert.deepEqual(trackPrimaryCommand("playlist", "track-two", "playlist-one"), {
+  assert.deepEqual(trackPrimaryCommand("playlist", "track-two", "playlist-one", 42), {
     command: "queue_playlist",
     fields: {
       playlist_id: "playlist-one",
       position: "replace",
       start_track_id: "track-two",
+      start_index: 42,
     },
   });
   assert.equal(trackPrimaryCommand("playlist", "track-two"), null);
+  assert.equal(trackPrimaryCommand("playlist", "track-two", "playlist-one"), null);
   assert.equal(trackPrimaryCommand("library", ""), null);
 });
 
@@ -130,6 +132,10 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   );
   assert.equal(source.includes('className: "track-primary"'), true);
   assert.equal(source.includes('className: "playlist-cover-button"'), true);
+  assert.equal(source.includes("this.playlistTrackOffset + index"), true);
+  assert.equal(source.includes('button("播放全部"'), false);
+  assert.equal(source.includes('button("下一首播放"'), false);
+  assert.equal(source.includes('button("加入队列"'), false);
   assert.equal(source.includes('role: "tab"'), true);
   assert.match(css, /\.tab\[aria-selected="true"\]/);
   assert.match(css, /\.track-primary:hover/);
@@ -197,6 +203,22 @@ test("queue state updates preserve pending volume and use a local pane refresh",
   });
   assert.equal(panel._pendingVolume, null);
   assert.equal(queueRenders, 2);
+});
+
+test("responsive narrow assignments never request a full panel render", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const toggles = [];
+  Object.assign(panel, {
+    _narrow: false,
+    toggleAttribute: (name, value) => { toggles.push([name, value]); },
+    _render: () => { throw new Error("narrow must not rebuild the Shadow DOM"); },
+  });
+
+  panel.narrow = false;
+  panel.narrow = true;
+  panel.narrow = true;
+  panel.narrow = false;
+  assert.deepEqual(toggles, [["narrow", true], ["narrow", false]]);
 });
 
 test("playlist navigation restores stable focus keys without retaining DOM nodes", async () => {
@@ -268,25 +290,59 @@ const panel = document.createElement("xiaoai-navidrome-panel");
 document.body.append(panel);
 panel.libraryTab = "playlists";
 panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1 }];
+panel.queue = {
+  ...panel.queue,
+  state: "playing",
+  current_index: 0,
+  current: { id: "track-one", title: "Synthetic Track", cover_art: "cover-one", duration: 180 },
+  items: [{ id: "track-one", title: "Synthetic Track", cover_art: "cover-one", duration: 180 }],
+  player: { volume_level: 0.4 },
+};
 panel._render();
 const libraryBefore = panel.shadowRoot.querySelector(".library-pane");
 const queueBefore = panel.shadowRoot.querySelector(".queue-pane");
-panel._applyQueue({ ...panel.queue, items: [], player: { volume_level: 0.4 } });
+const discCoverBefore = panel.shadowRoot.querySelector(".disc-cover");
+const queueCoverBefore = panel.shadowRoot.querySelector(".queue-cover");
+panel._applyQueue({ ...panel.queue, position: 1, player: { volume_level: 0.4 } });
 const localQueueRefresh = panel.shadowRoot.querySelector(".library-pane") === libraryBefore && panel.shadowRoot.querySelector(".queue-pane") !== queueBefore;
+const coversStable = panel.shadowRoot.querySelector(".disc-cover") === discCoverBefore && panel.shadowRoot.querySelector(".queue-cover") === queueCoverBefore;
+panel.entryId = "synthetic-entry";
+panel._initializedEntry = "synthetic-entry";
+panel.narrow = true;
+panel.narrow = true;
+panel.hass = { connection: {} };
+panel.panel = { config: { entry_id: "synthetic-entry" } };
+const haPropertiesStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
+let playlistCommand = null;
+panel._call = async (command, fields = {}) => {
+  if (command === "playlist_tracks") return {
+    items: [
+      { id: "track-duplicate", title: "Synthetic First" },
+      { id: "track-duplicate", title: "Synthetic Selected" },
+    ],
+    total: 2,
+  };
+  if (command === "queue_playlist") playlistCommand = fields;
+  return { ...panel.queue, revision: Number(panel.queue.revision || 0) + 1 };
+};
 const mode = panel.shadowRoot.querySelector(".mode-button");
 mode.focus();
 mode.click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const playerControlPreserved = panel.shadowRoot.activeElement?.dataset.focusKey === "player-mode";
+const controlClickStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
 const cover = panel.shadowRoot.querySelector(".playlist-cover-button");
 cover.focus();
 cover.click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const entered = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-back";
+panel.shadowRoot.querySelectorAll(".track-primary")[1].click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" && playlistCommand?.start_index === 1;
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = localQueueRefresh && playerControlPreserved && entered && returned ? "pass" : \`local=\${localQueueRefresh};control=\${playerControlPreserved};entered=\${entered};returned=\${returned}\`;
+document.body.dataset.focusResult = localQueueRefresh && coversStable && haPropertiesStable && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`local=\${localQueueRefresh};covers=\${coversStable};props=\${haPropertiesStable};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

@@ -481,25 +481,35 @@ class XiaoAINavidromeRuntime:
         position: str,
         *,
         start_track_id: str = "",
+        start_index: int | None = None,
         expected_revision: int | None,
         context: Context | None,
     ) -> dict[str, Any]:
-        """Add a full playlist, optionally rotating the clicked item to the front."""
+        """Add a full playlist, optionally starting at one exact clicked occurrence."""
         tracks = await self.navidrome.async_playlist_tracks(playlist_id)
-        if start_track_id:
-            start = next(
+        selected_index = start_index
+        if selected_index is not None:
+            if not 0 <= selected_index < len(tracks):
+                raise HomeAssistantError("The selected playlist item no longer exists")
+            if start_track_id and tracks[selected_index].id != start_track_id:
+                raise HomeAssistantError("The selected playlist item has changed")
+        elif start_track_id:
+            selected_index = next(
                 (index for index, item in enumerate(tracks) if item.id == start_track_id),
-                -1,
+                None,
             )
-            if start >= 0:
-                tracks = tracks[start:] + tracks[:start]
+            if selected_index is None:
+                raise HomeAssistantError("The selected playlist item no longer exists")
         try:
             if position == "replace":
                 return await self.queue.async_replace(
                     tracks,
+                    first_track_index=selected_index,
                     expected_revision=expected_revision,
                     context=context,
                 )
+            if selected_index:
+                tracks = tracks[selected_index:] + tracks[:selected_index]
             return await self.queue.async_add(
                 tracks,
                 position,

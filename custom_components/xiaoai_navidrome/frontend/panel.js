@@ -133,15 +133,21 @@ export function queueStatus(response) {
 }
 
 /** Map a track's main click target to its context-specific playback mutation. */
-export function trackPrimaryCommand(context, trackId, playlistId = "") {
+export function trackPrimaryCommand(context, trackId, playlistId = "", playlistIndex = -1) {
   const id = String(trackId || "");
   if (!id) return null;
   if (context === "playlist") {
     const listId = String(playlistId || "");
-    if (!listId) return null;
+    const itemIndex = Number(playlistIndex);
+    if (!listId || !Number.isInteger(itemIndex) || itemIndex < 0) return null;
     return {
       command: "queue_playlist",
-      fields: { playlist_id: listId, position: "replace", start_track_id: id },
+      fields: {
+        playlist_id: listId,
+        position: "replace",
+        start_track_id: id,
+        start_index: itemIndex,
+      },
     };
   }
   return {
@@ -443,9 +449,10 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   set narrow(value) {
-    this._narrow = Boolean(value);
-    this.toggleAttribute("narrow", this._narrow);
-    this._render();
+    const next = Boolean(value);
+    if (next === this._narrow) return;
+    this._narrow = next;
+    this.toggleAttribute("narrow", next);
   }
 
   get narrow() {
@@ -800,8 +807,30 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       return;
     }
     const activeFocusKey = String(this.shadowRoot.activeElement?.dataset?.focusKey || "");
-    current.replaceWith(this._renderQueue());
+    const replacement = this._renderQueue();
+    this._preserveQueueCovers(current, replacement);
+    current.replaceWith(replacement);
     this._focusByKey(activeFocusKey);
+  }
+
+  _preserveQueueCovers(current, replacement) {
+    const available = new Map();
+    for (const holder of replacement.querySelectorAll("[data-cover-key]")) {
+      const key = `${holder.dataset.coverKey}\u0000${holder.className}`;
+      const matches = available.get(key) || [];
+      matches.push(holder);
+      available.set(key, matches);
+    }
+    for (const holder of current.querySelectorAll("[data-cover-key]")) {
+      const key = `${holder.dataset.coverKey}\u0000${holder.className}`;
+      const target = available.get(key)?.shift();
+      if (target) {
+        const currentImage = holder.querySelector("img");
+        const nextImage = target.querySelector("img");
+        if (currentImage && nextImage) currentImage.alt = nextImage.alt;
+        target.replaceWith(holder);
+      }
+    }
   }
 
   _render() {
@@ -918,7 +947,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     return section;
   }
 
-  _renderTrack(track, context) {
+  _renderTrack(track, context, playlistIndex = -1) {
     const row = makeElement("article", { className: "track-row" });
     const label = voiceSafeText(track?.title, "未命名曲目");
     const copy = makeElement("span", { className: "track-copy" }, [
@@ -931,7 +960,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       className: "track-primary",
       label: context === "playlist" ? `从 ${label} 开始播放歌单` : `播放 ${label}`,
       title: context === "playlist" ? "从此曲开始播放整个歌单" : "立即播放",
-      on: { click: () => this._playTrackPrimary(track, context) },
+      on: { click: () => this._playTrackPrimary(track, context, playlistIndex) },
     }, [this._renderCover(track?.cover_art, track?.album || label), copy, meta]);
     const action = makeElement("div", { className: "row-actions" });
     if (context !== "playlist") {
@@ -982,13 +1011,12 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     section.append(makeElement("div", { className: "subheading" }, [
       button("返回歌单", () => this._closePlaylist(), { className: "back", dataset: { focusKey: "playlist-back" } }),
       makeElement("h2", { text: title }),
-      button("播放全部", () => this._queueCommand("queue_playlist", { playlist_id: String(this.selectedPlaylist.id), position: "replace" }), { className: "primary" }),
-      button("下一首播放", () => this._queueCommand("queue_playlist", { playlist_id: String(this.selectedPlaylist.id), position: "next" }), { className: "secondary" }),
-      button("加入队列", () => this._queueCommand("queue_playlist", { playlist_id: String(this.selectedPlaylist.id), position: "last" }), { className: "secondary" }),
     ]));
     const list = makeElement("div", { className: "track-list" });
     if (!this.playlistTracks.length) list.append(makeElement("p", { className: "empty", text: "歌单中没有曲目。" }));
-    for (const track of this.playlistTracks) list.append(this._renderTrack(track, "playlist"));
+    for (const [index, track] of this.playlistTracks.entries()) {
+      list.append(this._renderTrack(track, "playlist", this.playlistTrackOffset + index));
+    }
     section.append(list, this._pager(this.playlistTrackOffset, this.playlistTrackTotal, (offset) => { this.playlistTrackOffset = offset; this._loadPlaylistTracks(); }));
     return section;
   }
@@ -1255,8 +1283,13 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     return dialog;
   }
 
-  _playTrackPrimary(track, context) {
-    const action = trackPrimaryCommand(context, track?.id, this.selectedPlaylist?.id);
+  _playTrackPrimary(track, context, playlistIndex = -1) {
+    const action = trackPrimaryCommand(
+      context,
+      track?.id,
+      this.selectedPlaylist?.id,
+      playlistIndex,
+    );
     if (action) this._queueCommand(action.command, action.fields);
   }
 

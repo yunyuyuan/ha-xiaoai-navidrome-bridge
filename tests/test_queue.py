@@ -103,6 +103,61 @@ async def test_sequence_mode_wraps_after_the_last_track(queue: PlaybackQueue) ->
     assert wrapped["state"] == "playing"
 
 
+async def test_replace_keeps_requested_duplicate_occurrence_first(queue: PlaybackQueue) -> None:
+    """A clicked duplicate occurrence determines the first item and sequence."""
+    tracks = [
+        Track("track-a", title="Synthetic First", duration=300),
+        Track("track-b", duration=300),
+        Track("track-a", title="Synthetic Selected", duration=300),
+        Track("track-c", duration=300),
+    ]
+    status = await queue.async_replace(tracks, first_track_index=2)
+    assert status["current"]["title"] == "Synthetic Selected"
+    assert [item["title"] for item in status["items"]] == [
+        "Synthetic Selected",
+        "",
+        "Synthetic First",
+        "",
+    ]
+    assert queue.navidrome.created[-1] == [  # type: ignore[attr-defined]
+        "track-a",
+        "track-c",
+        "track-a",
+        "track-b",
+    ]
+
+
+async def test_shuffle_replace_keeps_requested_duplicate_occurrence_first(
+    queue: PlaybackQueue,
+) -> None:
+    """Shuffle keeps the clicked duplicate fixed and shuffles only its followers."""
+    await queue.async_set_options(shuffle=True)
+    tracks = [
+        Track("track-a", title="Synthetic First", duration=300),
+        Track("track-b", duration=300),
+        Track("track-a", title="Synthetic Selected", duration=300),
+        Track("track-c", duration=300),
+    ]
+    with patch(
+        "custom_components.xiaoai_navidrome.queue.random.SystemRandom.shuffle",
+        side_effect=lambda items: items.reverse(),
+    ):
+        status = await queue.async_replace(tracks, first_track_index=2)
+    assert status["current"]["title"] == "Synthetic Selected"
+    assert [item["title"] for item in status["items"]] == [
+        "Synthetic Selected",
+        "",
+        "Synthetic First",
+        "",
+    ]
+    assert queue.navidrome.created[-1] == [  # type: ignore[attr-defined]
+        "track-a",
+        "track-b",
+        "track-a",
+        "track-c",
+    ]
+
+
 async def test_native_resume_volume_mute_and_seek(
     hass: HomeAssistant, queue: PlaybackQueue
 ) -> None:
