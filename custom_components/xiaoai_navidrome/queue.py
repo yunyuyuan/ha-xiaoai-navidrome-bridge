@@ -15,10 +15,16 @@ from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.components.media_player.const import (
     ATTR_MEDIA_CONTENT_ID,
     ATTR_MEDIA_CONTENT_TYPE,
+    ATTR_MEDIA_DURATION,
+    ATTR_MEDIA_POSITION,
+    ATTR_MEDIA_POSITION_UPDATED_AT,
+    ATTR_MEDIA_SEEK_POSITION,
+    ATTR_MEDIA_VOLUME_LEVEL,
+    ATTR_MEDIA_VOLUME_MUTED,
     MediaPlayerEntityFeature,
 )
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import Context, HomeAssistant
+from homeassistant.core import Context, HomeAssistant, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
@@ -107,7 +113,7 @@ class PlaybackQueue:
         self.current_index = -1
         self.state = "stopped"
         self.shuffle = False
-        self.repeat = "off"
+        self.repeat = "all"
         self.started_at: datetime | None = None
         self.ends_at: datetime | None = None
         self.last_error = ""
@@ -150,8 +156,8 @@ class PlaybackQueue:
         elif not 0 <= self.current_index < len(self.items):
             self.current_index = 0
         self.shuffle = bool(stored.get("shuffle", False))
-        repeat = str(stored.get("repeat", "off"))
-        self.repeat = repeat if repeat in {"off", "all", "one"} else "off"
+        repeat = str(stored.get("repeat", "all"))
+        self.repeat = repeat if repeat in {"all", "one"} else "all"
         stored_configured_player = str(stored.get("configured_media_player", ""))
         if stored_configured_player == self._configured_media_player:
             self.media_player = str(stored.get("media_player") or self.media_player)
@@ -213,6 +219,7 @@ class PlaybackQueue:
         current = (
             self.items[self.current_index] if 0 <= self.current_index < len(self.items) else None
         )
+        player = self.player_status()
         return {
             "enabled": True,
             "state": self.state,
@@ -226,6 +233,49 @@ class PlaybackQueue:
             "last_error": self.last_error,
             "revision": self.revision,
             "media_player": self.media_player,
+            "position": player["position"],
+            "duration": player["duration"],
+            "player": player,
+        }
+
+    def player_status(self, entity_id: str | None = None) -> dict[str, Any]:
+        """Return non-sensitive state and capabilities for one media player."""
+        target = entity_id or self.media_player
+        state = self.hass.states.get(target) if target else None
+        features = int(state.attributes.get("supported_features", 0)) if state else 0
+        current = (
+            self.items[self.current_index] if 0 <= self.current_index < len(self.items) else None
+        )
+        if target != self.media_player:
+            current = None
+        reported_duration = (
+            self._positive_number(state.attributes.get(ATTR_MEDIA_DURATION) if state else None)
+            if current
+            else 0.0
+        )
+        duration = reported_duration or float(current.duration if current else 0)
+        position = self._player_position(state) if current else 0.0
+        if duration > 0:
+            position = min(position, duration)
+        volume = self._optional_number(
+            state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL) if state else None
+        )
+        return {
+            "entity_id": target,
+            "state": state.state if state else "unavailable",
+            "supported_features": features,
+            "supports_play": bool(features & MediaPlayerEntityFeature.PLAY),
+            "supports_pause": bool(features & MediaPlayerEntityFeature.PAUSE),
+            "supports_stop": bool(features & MediaPlayerEntityFeature.STOP),
+            "supports_seek": bool(features & MediaPlayerEntityFeature.SEEK),
+            "supports_volume_set": bool(features & MediaPlayerEntityFeature.VOLUME_SET),
+            "supports_volume_mute": bool(features & MediaPlayerEntityFeature.VOLUME_MUTE),
+            "volume_level": min(1.0, max(0.0, volume)) if volume is not None else None,
+            "is_volume_muted": bool(state.attributes.get(ATTR_MEDIA_VOLUME_MUTED, False))
+            if state
+            else False,
+            "position": max(0.0, position),
+            "duration": max(0.0, duration),
         }
 
     async def async_replace(
@@ -313,6 +363,35 @@ class PlaybackQueue:
             if not 0 <= self.current_index < len(self.items):
                 self.current_index = 0
             self._cancel_timer()
+            player_state = self.hass.states.get(self.media_player)
+            features = (
+                int(player_state.attributes.get("supported_features", 0)) if player_state else 0
+            )
+            if (
+                player_state is not None
+                and player_state.state == "paused"
+                and features & MediaPlayerEntityFeature.PLAY
+            ):
+                await self._async_player_service(
+                    "media_play", {ATTR_ENTITY_ID: self.media_player}, context
+                )
+                now = datetime.now(UTC)
+                position = self._player_position(player_state)
+                duration = max(1, self.items[self.current_index].duration)
+                self._active_output_player = self.media_player
+                self.state = "playing"
+                self.started_at = now - timedelta(seconds=min(position, duration))
+                self.ends_at = now + timedelta(
+                    seconds=max(1, duration - position) + self.gap_seconds
+                )
+                self._loading_started_at = now
+                self.last_error = ""
+                self._changed()
+                await self._async_persist()
+                self._schedule_timer(
+                    max(1, math.ceil((self.ends_at - now).total_seconds())), self.revision
+                )
+                return self.status()
             self._set_loading()
             self.last_error = ""
             self._changed()
@@ -432,8 +511,8 @@ class PlaybackQueue:
         async with self._operation_lock:
             self._ensure_open()
             self._check_revision(expected_revision)
-            if repeat is not None and repeat not in {"off", "all", "one"}:
-                raise QueueError("Repeat must be off, all or one")
+            if repeat is not None and repeat not in {"all", "one"}:
+                raise QueueError("Repeat must be all or one")
             if shuffle is not None and shuffle != self.shuffle:
                 self.shuffle = shuffle
                 if shuffle:
@@ -445,6 +524,97 @@ class PlaybackQueue:
             await self._async_persist()
             self._reschedule_timer_for_current()
             return self.status()
+
+    async def async_set_volume(
+        self,
+        volume_level: float,
+        *,
+        expected_revision: int | None = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Set the selected player's volume through Home Assistant."""
+        async with self._operation_lock:
+            self._ensure_open()
+            self._check_revision(expected_revision)
+            self._require_player()
+            if not 0 <= volume_level <= 1:
+                raise QueuePlayerError("Volume must be between 0 and 1")
+            if not self.player_status()["supports_volume_set"]:
+                raise QueuePlayerError("The selected media player does not support volume control")
+            await self._async_player_service(
+                "volume_set",
+                {
+                    ATTR_ENTITY_ID: self.media_player,
+                    ATTR_MEDIA_VOLUME_LEVEL: volume_level,
+                },
+                context,
+            )
+            self._notify()
+            return self.status()
+
+    async def async_set_muted(
+        self,
+        is_muted: bool,
+        *,
+        expected_revision: int | None = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Mute or unmute the selected player through Home Assistant."""
+        async with self._operation_lock:
+            self._ensure_open()
+            self._check_revision(expected_revision)
+            self._require_player()
+            if not self.player_status()["supports_volume_mute"]:
+                raise QueuePlayerError("The selected media player does not support mute control")
+            await self._async_player_service(
+                "volume_mute",
+                {
+                    ATTR_ENTITY_ID: self.media_player,
+                    ATTR_MEDIA_VOLUME_MUTED: is_muted,
+                },
+                context,
+            )
+            self._notify()
+            return self.status()
+
+    async def async_seek(
+        self,
+        position: float,
+        *,
+        expected_revision: int | None = None,
+        context: Context | None = None,
+    ) -> dict[str, Any]:
+        """Seek the current track and keep automatic advancement aligned."""
+        async with self._operation_lock:
+            self._ensure_open()
+            self._check_revision(expected_revision)
+            self._require_player()
+            if not 0 <= self.current_index < len(self.items):
+                raise QueueEmptyError("The playback queue has no current item")
+            if not self.player_status()["supports_seek"]:
+                raise QueuePlayerError("The selected media player does not support seeking")
+            duration = max(1, self.items[self.current_index].duration)
+            target = min(max(0.0, position), float(duration))
+            await self._async_player_service(
+                "media_seek",
+                {ATTR_ENTITY_ID: self.media_player, ATTR_MEDIA_SEEK_POSITION: target},
+                context,
+            )
+            if self.state == "playing":
+                now = datetime.now(UTC)
+                self.started_at = now - timedelta(seconds=target)
+                self.ends_at = now + timedelta(seconds=max(1, duration - target) + self.gap_seconds)
+                self._changed()
+                await self._async_persist()
+                self._schedule_timer(
+                    max(1, math.ceil((self.ends_at - now).total_seconds())), self.revision
+                )
+            else:
+                self._notify()
+            status = self.status()
+            status["position"] = target
+            status["player"]["position"] = target
+            return status
 
     async def async_set_media_player(
         self, entity_id: str, *, expected_revision: int | None = None
@@ -488,6 +658,7 @@ class PlaybackQueue:
                     or self._loading_started_at is None
                     or changed_at < self._loading_started_at
                 ):
+                    self._notify()
                     return False
                 self._set_stopped()
                 self._active_output_player = ""
@@ -500,10 +671,13 @@ class PlaybackQueue:
             or self.started_at is None
             or changed_at < self.started_at
         ):
+            self._notify()
             return False
         if self.ends_at is not None and self.ends_at - changed_at <= timedelta(seconds=30):
+            self._notify()
             return False
         self._schedule_idle_confirmation(entity_id, self.revision)
+        self._notify()
         return False
 
     async def _async_advance(
@@ -517,15 +691,6 @@ class PlaybackQueue:
         if not (automatic and self.repeat == "one"):
             next_index += direction
         if next_index >= len(self.items):
-            if self.repeat != "all":
-                self._set_stopped()
-                self._changed()
-                await self._async_persist()
-                if not automatic:
-                    output_player = self._active_output_player or self.media_player
-                    await self._async_stop_player(output_player, context)
-                self._active_output_player = ""
-                return self.status()
             if self.shuffle:
                 previous_id = self.items[self.current_index].id
                 random.SystemRandom().shuffle(self.items)
@@ -534,7 +699,7 @@ class PlaybackQueue:
                     self.items[0], self.items[1] = self.items[1], self.items[0]
             next_index = 0
         if next_index < 0:
-            next_index = len(self.items) - 1 if self.repeat == "all" else 0
+            next_index = len(self.items) - 1
         self.current_index = next_index
         self._set_loading()
         self.last_error = ""
@@ -627,13 +792,22 @@ class PlaybackQueue:
             service = "media_stop"
         else:
             raise QueuePlayerError("The selected media player supports neither pause nor stop")
-        await self.hass.services.async_call(
-            MEDIA_PLAYER_DOMAIN,
-            service,
-            {ATTR_ENTITY_ID: entity_id},
-            blocking=True,
-            context=context,
-        )
+        await self._async_player_service(service, {ATTR_ENTITY_ID: entity_id}, context)
+
+    async def _async_player_service(
+        self, service: str, data: dict[str, Any], context: Context | None
+    ) -> None:
+        """Call a media player service and expose only a fixed safe error."""
+        try:
+            await self.hass.services.async_call(
+                MEDIA_PLAYER_DOMAIN,
+                service,
+                data,
+                blocking=True,
+                context=context,
+            )
+        except Exception as err:
+            raise QueuePlayerError(_safe_playback_error(err)) from err
 
     def _schedule_timer(self, delay: int, revision: int) -> None:
         self._cancel_timer()
@@ -752,12 +926,50 @@ class PlaybackQueue:
             raise QueuePlayerError("Select a media player before playback")
         self._validate_player(self.media_player)
 
-    def _changed(self) -> None:
-        self.revision += 1
+    @staticmethod
+    def _optional_number(value: Any) -> float | None:
+        """Return a finite float without accepting booleans."""
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except TypeError, ValueError:
+            return None
+        return number if math.isfinite(number) else None
+
+    @classmethod
+    def _positive_number(cls, value: Any) -> float:
+        """Return a positive finite number or zero."""
+        number = cls._optional_number(value)
+        return number if number is not None and number > 0 else 0.0
+
+    def _player_position(self, state: State | None) -> float:
+        """Estimate current position from Home Assistant memory without polling."""
+        position = self._optional_number(
+            state.attributes.get(ATTR_MEDIA_POSITION) if state else None
+        )
+        if position is not None:
+            if state is not None and state.state == "playing":
+                updated_at = state.attributes.get(ATTR_MEDIA_POSITION_UPDATED_AT)
+                if isinstance(updated_at, datetime):
+                    position += max(
+                        0.0, (datetime.now(UTC) - updated_at.astimezone(UTC)).total_seconds()
+                    )
+            return max(0.0, position)
+        if self.state == "playing" and self.started_at is not None:
+            return max(0.0, (datetime.now(UTC) - self.started_at).total_seconds())
+        return 0.0
+
+    def _notify(self) -> None:
+        """Publish a snapshot without mutating the persistent queue revision."""
         status = self.status()
         self.hass.bus.async_fire(EVENT_QUEUE_UPDATED, {"entry_id": self.entry_id, "queue": status})
         for listener in tuple(self._listeners):
             listener(status)
+
+    def _changed(self) -> None:
+        self.revision += 1
+        self._notify()
 
     async def _async_persist(self) -> None:
         await self._store.async_save(

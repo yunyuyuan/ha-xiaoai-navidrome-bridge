@@ -63,7 +63,14 @@ async def test_setup_service_voice_and_player_state_sync(
     hass_ws_client: WebSocketGenerator,
 ) -> None:
     """The integration runs playback and state synchronization without YAML or Bridge."""
-    features = int(MediaPlayerEntityFeature.PLAY_MEDIA | MediaPlayerEntityFeature.PAUSE)
+    features = int(
+        MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.PLAY
+        | MediaPlayerEntityFeature.PAUSE
+        | MediaPlayerEntityFeature.SEEK
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+    )
     hass.states.async_set(PLAYER, "idle", {"supported_features": features})
     hass.states.async_set(SENSOR, "idle")
     media_calls: list[tuple[str, dict[str, Any]]] = []
@@ -72,7 +79,11 @@ async def test_setup_service_voice_and_player_state_sync(
         media_calls.append((call.service, dict(call.data)))
 
     hass.services.async_register("media_player", "play_media", capture)
+    hass.services.async_register("media_player", "media_play", capture)
     hass.services.async_register("media_player", "media_pause", capture)
+    hass.services.async_register("media_player", "media_seek", capture)
+    hass.services.async_register("media_player", "volume_set", capture)
+    hass.services.async_register("media_player", "volume_mute", capture)
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=ENTRY_DATA,
@@ -130,6 +141,15 @@ async def test_setup_service_voice_and_player_state_sync(
         assert panel_config["success"]
         assert panel_config["result"]["direct_share_streams"] is True
 
+        await websocket.send_json_auto_id(
+            {"type": f"{DOMAIN}/media_players", "entry_id": entry.entry_id}
+        )
+        players = await websocket.receive_json()
+        assert players["success"]
+        assert players["result"]["items"][0]["supports_seek"] is True
+        assert players["result"]["items"][0]["supports_volume_set"] is True
+        assert players["result"]["items"][0]["supports_volume_mute"] is True
+
         regular_user = await hass.auth.async_create_user("synthetic-regular-user")
         with pytest.raises(Unauthorized):
             await hass.services.async_call(
@@ -151,6 +171,31 @@ async def test_setup_service_voice_and_player_state_sync(
         assert media_calls[-1][1]["media_content_id"].startswith(
             "https://navidrome.invalid/share/s/"
         )
+
+        for payload, expected_call in (
+            (
+                {"action": "volume_set", "volume_level": 0.4},
+                ("volume_set", {"entity_id": PLAYER, "volume_level": 0.4}),
+            ),
+            (
+                {"action": "volume_mute", "is_volume_muted": True},
+                ("volume_mute", {"entity_id": PLAYER, "is_volume_muted": True}),
+            ),
+            (
+                {"action": "seek", "position": 30},
+                ("media_seek", {"entity_id": PLAYER, "seek_position": 30.0}),
+            ),
+        ):
+            await websocket.send_json_auto_id(
+                {
+                    "type": f"{DOMAIN}/player_control",
+                    "entry_id": entry.entry_id,
+                    **payload,
+                }
+            )
+            player_control = await websocket.receive_json()
+            assert player_control["success"]
+            assert media_calls[-1] == expected_call
 
         hass.states.async_set(SENSOR, "播放家庭音乐Synthetic Beta")
         await hass.async_block_till_done()
@@ -193,7 +238,7 @@ async def test_setup_service_voice_and_player_state_sync(
             return_response=True,
         )
         assert response["state"] == "playing"
-        assert media_calls[-1][0] == "play_media"
+        assert media_calls[-1][0] == "media_play"
         assert create_stream.call_count == 3
 
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)

@@ -258,7 +258,7 @@ async def websocket_queue_control(
         "queue_options",
         {
             vol.Optional("shuffle"): cv.boolean,
-            vol.Optional("repeat"): vol.In({"off", "all", "one"}),
+            vol.Optional("repeat"): vol.In({"all", "one"}),
             vol.Optional("expected_revision"): vol.Coerce(int),
         },
     )
@@ -302,6 +302,51 @@ async def websocket_queue_player(
 
 
 @websocket_api.require_admin
+@websocket_api.websocket_command(
+    _schema(
+        "player_control",
+        {
+            vol.Required("action"): vol.In({"volume_set", "volume_mute", "seek"}),
+            vol.Optional("volume_level"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+            vol.Optional("is_volume_muted"): cv.boolean,
+            vol.Optional("position"): vol.All(vol.Coerce(float), vol.Range(min=0, max=604800)),
+            vol.Optional("expected_revision"): vol.Coerce(int),
+        },
+    )
+)
+@websocket_api.async_response
+async def websocket_player_control(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Control supported properties of the selected Home Assistant player."""
+    queue = _runtime(hass, msg).queue
+    expected = msg.get("expected_revision")
+    context = connection.context(msg)
+    action = msg["action"]
+    if action == "volume_set":
+        if "volume_level" not in msg:
+            raise HomeAssistantError("Volume control requires volume_level")
+        result = await _queue_result(
+            queue.async_set_volume(msg["volume_level"], expected_revision=expected, context=context)
+        )
+    elif action == "volume_mute":
+        if "is_volume_muted" not in msg:
+            raise HomeAssistantError("Mute control requires is_volume_muted")
+        result = await _queue_result(
+            queue.async_set_muted(
+                msg["is_volume_muted"], expected_revision=expected, context=context
+            )
+        )
+    else:
+        if "position" not in msg:
+            raise HomeAssistantError("Seek control requires position")
+        result = await _queue_result(
+            queue.async_seek(msg["position"], expected_revision=expected, context=context)
+        )
+    connection.send_result(msg["id"], result)
+
+
+@websocket_api.require_admin
 @websocket_api.websocket_command(_schema("sync_library"))
 @websocket_api.async_response
 async def websocket_sync_library(
@@ -331,6 +376,7 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
         websocket_queue_control,
         websocket_queue_options,
         websocket_queue_player,
+        websocket_player_control,
         websocket_sync_library,
     ):
         websocket_api.async_register_command(hass, command)

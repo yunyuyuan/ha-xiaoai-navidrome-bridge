@@ -428,15 +428,12 @@ class XiaoAINavidromeRuntime:
             features = int(state.attributes.get("supported_features", 0))
             if features & required_play == 0 or features & supported_stop == 0:
                 continue
+            player = self.queue.player_status(state.entity_id)
             items.append(
                 {
-                    "entity_id": state.entity_id,
+                    **player,
                     "name": state.attributes.get(ATTR_FRIENDLY_NAME, state.entity_id),
-                    "state": state.state,
-                    "supported_features": features,
                     "supports_play_media": True,
-                    "supports_pause": bool(features & MediaPlayerEntityFeature.PAUSE),
-                    "supports_stop": bool(features & MediaPlayerEntityFeature.STOP),
                 }
             )
         items.sort(key=lambda item: str(item["name"]).casefold())

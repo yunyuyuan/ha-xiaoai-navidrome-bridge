@@ -90,6 +90,91 @@ async def test_replace_next_previous_and_cached_share(queue: PlaybackQueue) -> N
     assert len(queue.navidrome.created) == 1  # type: ignore[attr-defined]
 
 
+async def test_sequence_mode_wraps_after_the_last_track(queue: PlaybackQueue) -> None:
+    """The default sequential mode continuously loops the queue."""
+    first = await queue.async_replace(
+        [Track("track-a", duration=300), Track("track-b", duration=300)]
+    )
+    assert first["repeat"] == "all"
+    assert first["shuffle"] is False
+    second = await queue.async_next(expected_revision=first["revision"])
+    wrapped = await queue.async_next(expected_revision=second["revision"])
+    assert wrapped["current_index"] == 0
+    assert wrapped["state"] == "playing"
+
+
+async def test_native_resume_volume_mute_and_seek(
+    hass: HomeAssistant, queue: PlaybackQueue
+) -> None:
+    """Supported player controls call the corresponding Home Assistant services."""
+    features = int(
+        MediaPlayerEntityFeature.PLAY_MEDIA
+        | MediaPlayerEntityFeature.PLAY
+        | MediaPlayerEntityFeature.PAUSE
+        | MediaPlayerEntityFeature.SEEK
+        | MediaPlayerEntityFeature.VOLUME_SET
+        | MediaPlayerEntityFeature.VOLUME_MUTE
+    )
+
+    async def capture(call: ServiceCall) -> None:
+        queue.test_calls.append((call.service, dict(call.data)))  # type: ignore[attr-defined]
+
+    for service in ("media_play", "media_seek", "volume_set", "volume_mute"):
+        hass.services.async_register("media_player", service, capture)
+
+    playing = await queue.async_replace([Track("track-a", duration=300)])
+    hass.states.async_set(
+        PLAYER,
+        "paused",
+        {
+            "supported_features": features,
+            "media_duration": 300,
+            "media_position": 42,
+            "volume_level": 0.35,
+            "is_volume_muted": False,
+        },
+    )
+    assert await queue.async_handle_player_state(PLAYER, "playing", "paused", datetime.now(UTC))
+    resumed = await queue.async_play(expected_revision=queue.revision)
+    assert resumed["state"] == "playing"
+    assert len(queue.navidrome.created) == 1  # type: ignore[attr-defined]
+    assert queue.test_calls[-1] == ("media_play", {"entity_id": PLAYER})  # type: ignore[attr-defined]
+
+    volume = await queue.async_set_volume(0.6, expected_revision=resumed["revision"])
+    assert volume["player"]["supports_volume_set"] is True
+    assert queue.test_calls[-1] == (  # type: ignore[attr-defined]
+        "volume_set",
+        {"entity_id": PLAYER, "volume_level": 0.6},
+    )
+    muted = await queue.async_set_muted(True, expected_revision=volume["revision"])
+    assert muted["player"]["supports_volume_mute"] is True
+    assert queue.test_calls[-1] == (  # type: ignore[attr-defined]
+        "volume_mute",
+        {"entity_id": PLAYER, "is_volume_muted": True},
+    )
+    sought = await queue.async_seek(120, expected_revision=muted["revision"])
+    assert sought["position"] == 120
+    assert sought["player"]["position"] == 120
+    assert queue.test_calls[-1] == (  # type: ignore[attr-defined]
+        "media_seek",
+        {"entity_id": PLAYER, "seek_position": 120.0},
+    )
+    assert playing["revision"] < queue.revision
+    assert await queue.async_handle_player_state(PLAYER, "playing", "paused", datetime.now(UTC))
+    assert queue.state == "stopped"
+
+
+async def test_player_controls_reject_unsupported_capabilities(queue: PlaybackQueue) -> None:
+    """The queue never bypasses a media player's advertised capabilities."""
+    await queue.async_replace([Track("track-a", duration=300)])
+    with pytest.raises(QueuePlayerError, match="volume control"):
+        await queue.async_set_volume(0.5)
+    with pytest.raises(QueuePlayerError, match="mute control"):
+        await queue.async_set_muted(True)
+    with pytest.raises(QueuePlayerError, match="seeking"):
+        await queue.async_seek(30)
+
+
 async def test_playback_error_hides_dynamic_share_identifier(queue: PlaybackQueue) -> None:
     """A failed M3U request cannot expose its capability identifier."""
     private_id = "synthetic-private-share-capability"

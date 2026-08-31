@@ -18,9 +18,19 @@ export function voiceSafeText(value, fallback = "") {
   return clean || fallback;
 }
 
-/** Return the next server-supported repeat mode. */
-export function cycleRepeat(repeat) {
-  return ({ off: "all", all: "one", one: "off" })[repeat] || "off";
+/** Collapse queue flags into the three playback modes presented by the panel. */
+export function playbackMode(queue) {
+  if (queue?.repeat === "one") return "one";
+  return queue?.shuffle ? "shuffle" : "sequence";
+}
+
+/** Return one atomic queue-options update for the next playback mode. */
+export function nextPlaybackMode(mode) {
+  return ({
+    sequence: { shuffle: true, repeat: "all" },
+    shuffle: { shuffle: false, repeat: "one" },
+    one: { shuffle: false, repeat: "all" },
+  })[mode] || { shuffle: false, repeat: "all" };
 }
 
 /**
@@ -132,6 +142,9 @@ function makeElement(tag, options = {}, children = []) {
   if (options.title) node.title = voiceSafeText(options.title);
   if (options.type) node.type = options.type;
   if (options.value !== undefined) node.value = String(options.value);
+  if (options.min !== undefined) node.min = String(options.min);
+  if (options.max !== undefined) node.max = String(options.max);
+  if (options.step !== undefined) node.step = String(options.step);
   if (options.disabled !== undefined) node.disabled = Boolean(options.disabled);
   if (options.checked !== undefined) node.checked = Boolean(options.checked);
   if (options.placeholder) node.placeholder = voiceSafeText(options.placeholder);
@@ -149,6 +162,43 @@ function makeElement(tag, options = {}, children = []) {
   }
   node.append(...children.filter(Boolean));
   return node;
+}
+
+const ICON_PATHS = Object.freeze({
+  previous: "M6 5h2v14H6zm12.5 1.5v11L10 12z",
+  next: "M16 5h2v14h-2zM5.5 6.5 14 12l-8.5 5.5z",
+  play: "M8 5v14l11-7z",
+  pause: "M7 5h4v14H7zm6 0h4v14h-4z",
+  sequence: "M7 7h11l-2.5-2.5L17 3l5 5-5 5-1.5-1.5L18 9H7a3 3 0 0 0-3 3H2a5 5 0 0 1 5-5zm10 8a3 3 0 0 0 3-3h2a5 5 0 0 1-5 5H6l2.5 2.5L7 21l-5-5 5-5 1.5 1.5L6 15z",
+  shuffle: "M16.5 3.5 22 9l-5.5 5.5-1.4-1.4L18.2 10h-2.1a4 4 0 0 1-3.6-2.2l-1.1-2.2A2 2 0 0 0 9.6 4.5H3v-2h6.6a4 4 0 0 1 3.6 2.2l1.1 2.2a2 2 0 0 0 1.8 1.1h2.1l-3.1-3.1zm-7 8.7 1.4 1.4-1.7 3.3a4 4 0 0 1-3.6 2.2H3v-2h2.6a2 2 0 0 0 1.8-1.1zm7 2.3L22 20l-5.5 5.5-1.4-1.4 3.1-3.1h-2.1a4 4 0 0 1-3.6-2.2l-.6-1.2 1.4-1.4 1 1.7a2 2 0 0 0 1.8 1.1h2.1l-3.1-3.1z",
+  one: "M7 7h11l-2.5-2.5L17 3l5 5-5 5-1.5-1.5L18 9H7a3 3 0 0 0-3 3H2a5 5 0 0 1 5-5zm10 8a3 3 0 0 0 3-3h2a5 5 0 0 1-5 5H6l2.5 2.5L7 21l-5-5 5-5 1.5 1.5L6 15zm-5-4h2v6h-2v-4h-1v-1z",
+  volume: "M4 10v4h4l5 4V6L8 10zm11.5-.5a4 4 0 0 1 0 5l1.5 1.3a6 6 0 0 0 0-7.6zm2.8-2.7a8 8 0 0 1 0 10.4l1.5 1.3a10 10 0 0 0 0-13z",
+  muted: "M4 10v4h4l5 4V6L8 10zm11.4-.8L17.2 11l1.8-1.8 1.4 1.4-1.8 1.8 1.8 1.8-1.4 1.4-1.8-1.8-1.8 1.8-1.4-1.4 1.8-1.8-1.8-1.8z",
+  trash: "M8 7h8l-.6 13H8.6zM9 4h6l1 2H8zm-3 2h12v2H6z",
+});
+
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", ICON_PATHS[name] || ICON_PATHS.play);
+  svg.append(path);
+  return svg;
+}
+
+function iconButton(iconName, label, onClick, options = {}) {
+  return makeElement("button", {
+    type: "button",
+    className: options.className || "icon-button",
+    label,
+    title: label,
+    disabled: options.disabled,
+    pressed: options.pressed,
+    dataset: options.dataset,
+    on: { click: onClick },
+  }, [icon(iconName)]);
 }
 
 function button(text, onClick, options = {}) {
@@ -289,7 +339,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._narrow = false;
     this._connected = false;
     this.entryId = "";
-    this.queue = { items: [], current_index: -1, revision: 0, state: "stopped", repeat: "off", shuffle: false };
+    this.queue = { items: [], current_index: -1, revision: 0, state: "stopped", repeat: "all", shuffle: false };
     this.config = {};
     this.players = [];
     this.tracks = [];
@@ -319,6 +369,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._unsubscribeQueue = null;
     this._commandChain = Promise.resolve();
     this._queueEpoch = 0;
+    this._queueReceivedAt = Date.now();
+    this._progressTimer = null;
+    this._seekPreview = null;
     this._initializedEntry = "";
     this._initializing = false;
     this._covers = new CoverStore(this);
@@ -388,6 +441,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._detailGate.cancel();
     if (this._unsubscribeQueue) this._unsubscribeQueue();
     this._unsubscribeQueue = null;
+    if (this._progressTimer) clearInterval(this._progressTimer);
+    this._progressTimer = null;
     this._covers.clear();
   }
 
@@ -522,7 +577,10 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       revision: Number.isFinite(Number(status.revision)) ? Number(status.revision) : this.queue.revision || 0,
     };
     this._queueEpoch += 1;
+    this._queueReceivedAt = Date.now();
+    this._seekPreview = null;
     this._render();
+    this._syncProgressTimer();
   }
 
   async _loadTracks() {
@@ -712,7 +770,6 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   _renderHeader() {
-    const current = this.queue.current || this.queue.items?.[this.queue.current_index];
     const header = makeElement("header", { className: "header" });
     const brand = makeElement("div", { className: "brand" }, [
       makeElement("div", { className: "brand-mark", text: "♫" }),
@@ -721,18 +778,11 @@ class XiaoAINavidromePanel extends HTMLElementBase {
         makeElement("p", { className: "connection", text: `${this.connectionState}${this.syncing ? " · 正在同步" : ""}` }),
       ]),
     ]);
-    const now = makeElement("div", { className: "now-playing" }, [
-      this._renderCover(current?.cover_art, current?.album || current?.title || "当前播放", "now-cover"),
-      makeElement("div", { className: "now-copy" }, [
-        makeElement("strong", { text: current ? voiceSafeText(current.title, "未命名曲目") : "尚未选择曲目" }),
-        makeElement("span", { text: current ? voiceSafeText(current.artist, "未知艺术家") : "从曲库开始播放" }),
-      ]),
-    ]);
     const actions = makeElement("div", { className: "header-actions" }, [
       button("同步曲库", () => this._syncLibrary(), { className: "secondary", disabled: this.syncing }),
       button(this.themeMode === "auto" ? "跟随主题" : this.themeMode === "light" ? "浅色主题" : "深色主题", () => this._changeTheme(), { className: "secondary" }),
     ]);
-    header.append(brand, now, actions);
+    header.append(brand, actions);
     return header;
   }
 
@@ -882,21 +932,61 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   _renderQueue() {
     const pane = makeElement("aside", { className: "queue-pane", label: "播放队列" });
-    const state = this.queue.state === "playing" || this.queue.state === "loading";
+    const active = this.queue.state === "playing" || this.queue.state === "loading";
+    const current = this.queue.current || this.queue.items?.[this.queue.current_index];
+    const player = this.queue.player || {};
+    const mode = playbackMode(this.queue);
+    const modes = {
+      sequence: { icon: "sequence", label: "顺序循环" },
+      shuffle: { icon: "shuffle", label: "随机播放" },
+      one: { icon: "one", label: "单曲循环" },
+    };
+    const modeInfo = modes[mode];
     const controls = makeElement("div", { className: "transport" }, [
-      button("上一首", () => this._queueCommand("queue_control", { action: "previous" }), { className: "transport-button" }),
-      button(state ? "停止" : "播放", () => this._queueCommand("queue_control", { action: state ? "stop" : "play" }), { className: "transport-main" }),
-      button("下一首", () => this._queueCommand("queue_control", { action: "next" }), { className: "transport-button" }),
+      iconButton("previous", "上一首", () => this._queueCommand("queue_control", { action: "previous" }), {
+        className: "transport-button icon-button",
+        disabled: !this.queue.items?.length,
+        dataset: { focusKey: "player-previous" },
+      }),
+      iconButton(active ? "pause" : "play", active ? "暂停" : "播放", () => this._queueCommand("queue_control", { action: active ? "stop" : "play" }), {
+        className: "transport-main icon-button",
+        disabled: !this.queue.items?.length,
+        dataset: { focusKey: "player-toggle" },
+      }),
+      iconButton("next", "下一首", () => this._queueCommand("queue_control", { action: "next" }), {
+        className: "transport-button icon-button",
+        disabled: !this.queue.items?.length,
+        dataset: { focusKey: "player-next" },
+      }),
+      iconButton(modeInfo.icon, `播放模式：${modeInfo.label}`, () => this._queueCommand("queue_options", nextPlaybackMode(mode)), {
+        className: "mode-button icon-button",
+        dataset: { mode, focusKey: "player-mode" },
+      }),
     ]);
+    const disc = makeElement("div", { className: `disc ${active ? "disc-spinning" : ""}` }, [
+      this._renderCover(current?.cover_art, current?.album || current?.title || "音乐", "disc-cover"),
+      makeElement("span", { className: "disc-hole" }),
+    ]);
+    const stage = makeElement("div", { className: "player-stage" }, [
+      disc,
+      makeElement("div", { className: "player-copy" }, [
+        makeElement("span", { className: "player-state", text: this._playerStateText() }),
+        makeElement("strong", { text: voiceSafeText(current?.title, "选择一首音乐") }),
+        makeElement("span", { text: current ? voiceSafeText(current?.artist, "未知艺术家") : "从曲库或歌单开始播放" }),
+      ]),
+    ]);
+    const progress = this._renderProgress(player, current);
+    const volume = this._renderVolume(player);
+    const playerCard = makeElement("section", { className: "player-card", label: "音乐控制" }, [stage, progress, controls, volume]);
     const heading = makeElement("div", { className: "queue-heading" }, [
       makeElement("div", {}, [makeElement("h2", { text: "播放队列" }), makeElement("span", { text: `${this.queue.items?.length || 0} 首` })]),
-      button("清空", () => this._queueCommand("queue_control", { action: "clear" }), { className: "danger", disabled: !this.queue.items?.length }),
+      iconButton("trash", "清空队列", () => this._queueCommand("queue_control", { action: "clear" }), {
+        className: "danger icon-button queue-clear",
+        disabled: !this.queue.items?.length,
+        dataset: { focusKey: "queue-clear" },
+      }),
     ]);
-    const options = makeElement("div", { className: "queue-options" }, [
-      button("随机", () => this._queueCommand("queue_options", { shuffle: !this.queue.shuffle }), { className: "option", pressed: Boolean(this.queue.shuffle) }),
-      button(this._repeatText(), () => this._queueCommand("queue_options", { repeat: cycleRepeat(this.queue.repeat) }), { className: "option", pressed: this.queue.repeat !== "off" }),
-    ]);
-    const player = this._renderPlayerSelector();
+    const playerSelector = this._renderPlayerSelector();
     const list = makeElement("ol", { className: "queue-list" });
     if (!this.queue.items?.length) list.append(makeElement("li", { className: "empty", text: "队列为空。选择曲目即可开始播放。" }));
     this.queue.items?.forEach((track, index) => {
@@ -912,16 +1002,119 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       ]);
       list.append(row);
     });
-    pane.append(heading, controls, options, player, list);
+    pane.append(playerCard, playerSelector, heading, list);
     return pane;
   }
 
-  _repeatText() {
-    return ({ off: "不循环", all: "列表循环", one: "单曲循环" })[this.queue.repeat] || "不循环";
+  _playerStateText() {
+    if (this.queue.state === "loading") return "正在加载";
+    if (this.queue.state === "playing") return "正在播放";
+    if (this.queue.state === "error") return "播放失败";
+    if (this.queue.player?.state === "paused") return "已暂停";
+    return "准备播放";
+  }
+
+  _displayPosition() {
+    const duration = Math.max(0, Number(this.queue.duration || this.queue.player?.duration) || 0);
+    if (this._seekPreview !== null) return Math.min(duration || this._seekPreview, this._seekPreview);
+    let position = Math.max(0, Number(this.queue.position || this.queue.player?.position) || 0);
+    if (this.queue.state === "playing") position += Math.max(0, Date.now() - this._queueReceivedAt) / 1000;
+    return duration ? Math.min(position, duration) : position;
+  }
+
+  _renderProgress(player, current) {
+    const duration = Math.max(0, Number(this.queue.duration || player?.duration || current?.duration) || 0);
+    const position = this._displayPosition();
+    const canSeek = Boolean(player?.supports_seek && current && duration > 0);
+    const range = makeElement("input", {
+      type: "range",
+      className: "progress-range",
+      label: "播放进度",
+      min: 0,
+      max: Math.max(1, Math.floor(duration)),
+      step: 1,
+      value: Math.min(position, duration || position),
+      disabled: !canSeek,
+      dataset: { focusKey: "player-progress" },
+      on: {
+        input: (event) => {
+          this._seekPreview = Number(event.currentTarget.value);
+          const elapsed = event.currentTarget.parentElement?.querySelector(".progress-elapsed");
+          if (elapsed) elapsed.textContent = formatDuration(this._seekPreview);
+        },
+        change: (event) => {
+          const target = Number(event.currentTarget.value);
+          this._seekPreview = null;
+          this._queueCommand("player_control", { action: "seek", position: target });
+        },
+        blur: () => { this._seekPreview = null; },
+      },
+    });
+    return makeElement("div", { className: "progress-control" }, [
+      range,
+      makeElement("div", { className: "progress-times" }, [
+        makeElement("span", { className: "progress-elapsed", text: formatDuration(position) }),
+        makeElement("span", { text: formatDuration(duration) }),
+      ]),
+    ]);
+  }
+
+  _renderVolume(player) {
+    const canSet = Boolean(player?.supports_volume_set);
+    const canMute = Boolean(player?.supports_volume_mute);
+    const muted = Boolean(player?.is_volume_muted);
+    const volume = Math.round(Math.max(0, Math.min(1, Number(player?.volume_level) || 0)) * 100);
+    const range = makeElement("input", {
+      type: "range",
+      className: "volume-range",
+      label: "音量",
+      min: 0,
+      max: 100,
+      step: 1,
+      value: volume,
+      disabled: !canSet,
+      dataset: { focusKey: "player-volume" },
+      on: {
+        input: (event) => {
+          const value = event.currentTarget.parentElement?.querySelector(".volume-value");
+          if (value) value.textContent = `${event.currentTarget.value}%`;
+        },
+        change: (event) => this._queueCommand("player_control", {
+          action: "volume_set",
+          volume_level: Number(event.currentTarget.value) / 100,
+        }),
+      },
+    });
+    return makeElement("div", { className: "volume-control" }, [
+      iconButton(muted ? "muted" : "volume", muted ? "取消静音" : "静音", () => this._queueCommand("player_control", {
+        action: "volume_mute",
+        is_volume_muted: !muted,
+      }), { className: "volume-button icon-button", disabled: !canMute, pressed: muted, dataset: { focusKey: "player-mute" } }),
+      range,
+      makeElement("span", { className: "volume-value", text: canSet ? `${volume}%` : "--" }),
+    ]);
+  }
+
+  _syncProgressTimer() {
+    const shouldRun = this._connected && this.queue.state === "playing" && this._displayPosition() >= 0;
+    if (!shouldRun && this._progressTimer) {
+      clearInterval(this._progressTimer);
+      this._progressTimer = null;
+      return;
+    }
+    if (!shouldRun || this._progressTimer) return;
+    this._progressTimer = setInterval(() => {
+      const range = this.shadowRoot?.querySelector(".progress-range");
+      if (!range || this._seekPreview !== null) return;
+      const position = this._displayPosition();
+      range.value = String(Math.min(Number(range.max) || position, position));
+      const elapsed = this.shadowRoot?.querySelector(".progress-elapsed");
+      if (elapsed) elapsed.textContent = formatDuration(position);
+    }, 1000);
   }
 
   _renderPlayerSelector() {
-    const select = makeElement("select", { className: "player-select", label: "播放设备", on: { change: (event) => {
+    const select = makeElement("select", { className: "player-select", label: "播放设备", dataset: { focusKey: "player-select" }, on: { change: (event) => {
       const entityId = event.currentTarget.value;
       if (entityId) this._queueCommand("queue_player", { entity_id: entityId });
     } } });

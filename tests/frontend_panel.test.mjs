@@ -13,8 +13,9 @@ const {
   RequestGate,
   coverApiPath,
   coverClassNames,
-  cycleRepeat,
   formatDuration,
+  nextPlaybackMode,
+  playbackMode,
   queueStatus,
   responseItems,
   trackPrimaryCommand,
@@ -27,11 +28,14 @@ test("voiceSafeText removes control and directional characters while preserving 
   assert.equal(voiceSafeText("\t", "Untitled"), "Untitled");
 });
 
-test("cycleRepeat uses the exact off, all, one sequence and recovers from invalid values", () => {
-  assert.equal(cycleRepeat("off"), "all");
-  assert.equal(cycleRepeat("all"), "one");
-  assert.equal(cycleRepeat("one"), "off");
-  assert.equal(cycleRepeat("unexpected"), "off");
+test("playback mode cycles through sequence, shuffle, and repeat-one atomically", () => {
+  assert.equal(playbackMode({ repeat: "all", shuffle: false }), "sequence");
+  assert.equal(playbackMode({ repeat: "all", shuffle: true }), "shuffle");
+  assert.equal(playbackMode({ repeat: "one", shuffle: true }), "one");
+  assert.deepEqual(nextPlaybackMode("sequence"), { shuffle: true, repeat: "all" });
+  assert.deepEqual(nextPlaybackMode("shuffle"), { shuffle: false, repeat: "one" });
+  assert.deepEqual(nextPlaybackMode("one"), { shuffle: false, repeat: "all" });
+  assert.deepEqual(nextPlaybackMode("unexpected"), { shuffle: false, repeat: "all" });
 });
 
 test("formatDuration produces stable compact timestamps", () => {
@@ -113,6 +117,23 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   assert.match(css, /\.playlist-cover-button:hover/);
 });
 
+test("player uses a rotating disc, icon controls, ranges, and one mode button", async () => {
+  const source = await readFile(moduleUrl, "utf8");
+  const css = await readFile(
+    new URL("../custom_components/xiaoai_navidrome/frontend/panel.css", import.meta.url),
+    "utf8",
+  );
+  assert.equal(source.includes('className: `disc ${active ? "disc-spinning" : ""}`'), true);
+  assert.equal(source.includes('className: "mode-button icon-button"'), true);
+  assert.equal(source.includes('className: "progress-range"'), true);
+  assert.equal(source.includes('className: "volume-range"'), true);
+  assert.equal(source.includes('this._queueCommand("player_control"'), true);
+  assert.equal(source.includes('className: "now-playing"'), false);
+  assert.match(css, /@keyframes disc-spin/);
+  assert.match(css, /\.mode-button\[data-mode="one"\]::after/);
+  assert.match(css, /prefers-reduced-motion:[^}]+animation: none/s);
+});
+
 test("playlist navigation preserves keyboard focus across Shadow DOM rerenders", async (context) => {
   const browserCandidates = [
     process.env.CHROME_PATH,
@@ -147,6 +168,11 @@ document.body.append(panel);
 panel.libraryTab = "playlists";
 panel.playlists = [{ id: "playlist-one", name: "Synthetic Playlist", song_count: 1 }];
 panel._render();
+const mode = panel.shadowRoot.querySelector(".mode-button");
+mode.focus();
+mode.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const playerControlPreserved = panel.shadowRoot.activeElement?.dataset.focusKey === "player-mode";
 const cover = panel.shadowRoot.querySelector(".playlist-cover-button");
 cover.focus();
 cover.click();
@@ -155,7 +181,7 @@ const entered = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-b
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = entered && returned ? "pass" : \`entered=\${entered};returned=\${returned}\`;
+document.body.dataset.focusResult = playerControlPreserved && entered && returned ? "pass" : \`control=\${playerControlPreserved};entered=\${entered};returned=\${returned}\`;
 </script></body></html>`;
 
   try {
