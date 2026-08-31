@@ -102,6 +102,24 @@ export function queueStatus(response) {
     : null;
 }
 
+/** Map a track's main click target to its context-specific playback mutation. */
+export function trackPrimaryCommand(context, trackId, playlistId = "") {
+  const id = String(trackId || "");
+  if (!id) return null;
+  if (context === "playlist") {
+    const listId = String(playlistId || "");
+    if (!listId) return null;
+    return {
+      command: "queue_playlist",
+      fields: { playlist_id: listId, position: "replace", start_track_id: id },
+    };
+  }
+  return {
+    command: "queue_add",
+    fields: { track_ids: [id], position: "replace" },
+  };
+}
+
 function responseTotal(response) {
   const number = Number(response?.total);
   return Number.isFinite(number) ? number : 0;
@@ -120,6 +138,8 @@ function makeElement(tag, options = {}, children = []) {
   if (options.role) node.setAttribute("role", options.role);
   if (options.label) node.setAttribute("aria-label", voiceSafeText(options.label));
   if (options.pressed !== undefined) node.setAttribute("aria-pressed", String(Boolean(options.pressed)));
+  if (options.selectedState !== undefined) node.setAttribute("aria-selected", String(Boolean(options.selectedState)));
+  if (options.tabIndex !== undefined) node.tabIndex = Number(options.tabIndex);
   if (options.selected !== undefined) node.selected = Boolean(options.selected);
   if (options.dataset) {
     for (const [key, value] of Object.entries(options.dataset)) node.dataset[key] = String(value);
@@ -140,6 +160,10 @@ function button(text, onClick, options = {}) {
     title: options.title || options.label || text,
     disabled: options.disabled,
     pressed: options.pressed,
+    role: options.role,
+    selectedState: options.selectedState,
+    tabIndex: options.tabIndex,
+    dataset: options.dataset,
     on: { click: onClick },
   });
 }
@@ -280,6 +304,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this.playlistTracks = [];
     this.playlistTrackTotal = 0;
     this.playlistTrackOffset = 0;
+    this._playlistReturnFocusKey = "";
     this.detail = null;
     this.libraryTab = "tracks";
     this.connectionState = "正在连接";
@@ -535,11 +560,24 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   async _openPlaylist(playlist) {
+    const playlistId = String(playlist?.id || "");
+    if (!playlistId) return;
+    this._playlistReturnFocusKey = `playlist-cover:${playlistId}`;
     this.selectedPlaylist = playlist;
     this.playlistTrackOffset = 0;
     this.playlistTracks = [];
     this._render();
+    this._focusByKey("playlist-back", () => String(this.selectedPlaylist?.id || "") === playlistId);
     await this._loadPlaylistTracks();
+  }
+
+  _closePlaylist() {
+    const returnFocusKey = this._playlistReturnFocusKey;
+    this._playlistReturnFocusKey = "";
+    this.selectedPlaylist = null;
+    this._playlistTracksGate.cancel();
+    this._render();
+    this._focusByKey(returnFocusKey, () => this.libraryTab === "playlists" && !this.selectedPlaylist);
   }
 
   async _loadPlaylistTracks() {
@@ -616,7 +654,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   _renderCover(coverId, label, className = "") {
-    const holder = makeElement("div", { className: coverClassNames(className), label: `${voiceSafeText(label, "音乐")}封面` }, [
+    const holder = makeElement("span", { className: coverClassNames(className), label: `${voiceSafeText(label, "音乐")}封面` }, [
       makeElement("span", { text: "♫" }),
     ]);
     const key = String(coverId || "");
@@ -637,6 +675,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   _render() {
     if (!this.shadowRoot || typeof document === "undefined") return;
+    const activeFocusKey = String(this.shadowRoot.activeElement?.dataset?.focusKey || "");
     const app = makeElement("main", { className: "panel", dataset: { theme: this.themeMode } });
     app.append(this._renderHeader());
     if (this.notice) {
@@ -654,6 +693,22 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     // Keep the cached async stylesheet node when replacing the application tree.
     const style = this.shadowRoot.querySelector("style[data-xiaoai-panel]");
     this.shadowRoot.replaceChildren(...(style ? [style, app] : [app]));
+    this._focusByKey(activeFocusKey);
+  }
+
+  _focusByKey(focusKey, guard = () => true) {
+    const key = String(focusKey || "");
+    if (!key) return;
+    queueMicrotask(() => {
+      if (!this._connected || !this.isConnected || !guard()) return;
+      const targets = this.shadowRoot?.querySelectorAll("[data-focus-key]") || [];
+      for (const target of targets) {
+        if (target.dataset.focusKey === key) {
+          target.focus();
+          return;
+        }
+      }
+    });
   }
 
   _renderHeader() {
@@ -683,14 +738,42 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   _renderLibrary() {
     const pane = makeElement("section", { className: "library-pane", label: "曲库浏览" });
-    const tabs = makeElement("div", { className: "tabs", role: "tablist" }, [
-      button("曲目", () => { this.libraryTab = "tracks"; this._render(); }, { className: "tab", pressed: this.libraryTab === "tracks" }),
-      button("歌单", () => { this.libraryTab = "playlists"; this._render(); }, { className: "tab", pressed: this.libraryTab === "playlists" }),
+    const tabs = makeElement("div", { className: "tabs", role: "tablist", on: { keydown: (event) => this._handleLibraryTabKey(event) } }, [
+      button("曲目", () => this._selectLibraryTab("tracks"), {
+        className: "tab",
+        role: "tab",
+        selectedState: this.libraryTab === "tracks",
+        tabIndex: this.libraryTab === "tracks" ? 0 : -1,
+      }),
+      button("歌单", () => this._selectLibraryTab("playlists"), {
+        className: "tab",
+        role: "tab",
+        selectedState: this.libraryTab === "playlists",
+        tabIndex: this.libraryTab === "playlists" ? 0 : -1,
+      }),
     ]);
     pane.append(tabs);
     if (this.libraryTab === "tracks") pane.append(this._renderTracks());
     else pane.append(this.selectedPlaylist ? this._renderPlaylistTracks() : this._renderPlaylists());
     return pane;
+  }
+
+  _selectLibraryTab(tab) {
+    if (!["tracks", "playlists"].includes(tab)) return;
+    this.libraryTab = tab;
+    this._render();
+    queueMicrotask(() => this.shadowRoot?.querySelector(".tab[aria-selected='true']")?.focus());
+  }
+
+  _handleLibraryTabKey(event) {
+    const key = event?.key;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(key)) return;
+    event.preventDefault();
+    let tab;
+    if (key === "Home") tab = "tracks";
+    else if (key === "End") tab = "playlists";
+    else tab = this.libraryTab === "tracks" ? "playlists" : "tracks";
+    this._selectLibraryTab(tab);
   }
 
   _searchBar(value, placeholder, onInput) {
@@ -715,24 +798,27 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   _renderTrack(track, context) {
     const row = makeElement("article", { className: "track-row" });
     const label = voiceSafeText(track?.title, "未命名曲目");
-    row.append(this._renderCover(track?.cover_art, track?.album || label));
-    const copy = makeElement("div", { className: "track-copy" }, [
+    const copy = makeElement("span", { className: "track-copy" }, [
       makeElement("strong", { text: label }),
       makeElement("span", { text: `${voiceSafeText(track?.artist, "未知艺术家")} · ${voiceSafeText(track?.album, "未知专辑")}` }),
     ]);
     const meta = makeElement("span", { className: "duration", text: formatDuration(track?.duration) });
+    const primary = makeElement("button", {
+      type: "button",
+      className: "track-primary",
+      label: context === "playlist" ? `从 ${label} 开始播放歌单` : `播放 ${label}`,
+      title: context === "playlist" ? "从此曲开始播放整个歌单" : "立即播放",
+      on: { click: () => this._playTrackPrimary(track, context) },
+    }, [this._renderCover(track?.cover_art, track?.album || label), copy, meta]);
     const action = makeElement("div", { className: "row-actions" });
-    if (context === "playlist") {
-      action.append(button("播放歌单", () => this._playPlaylistTrack(track), { className: "row-button", label: "从此曲播放整个歌单" }));
-    } else {
+    if (context !== "playlist") {
       action.append(
-        button("播放", () => this._queueCommand("queue_add", { track_ids: [String(track.id)], position: "replace" }), { className: "row-button" }),
         button("下一首", () => this._queueCommand("queue_add", { track_ids: [String(track.id)], position: "next" }), { className: "row-button" }),
         button("加入", () => this._queueCommand("queue_add", { track_ids: [String(track.id)], position: "last" }), { className: "row-button" }),
       );
     }
     action.append(button("详情", () => this._showDetail(track), { className: "row-button" }));
-    row.append(copy, meta, action);
+    row.append(primary, action);
     return row;
   }
 
@@ -747,8 +833,16 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     if (!this.playlists.length) grid.append(makeElement("p", { className: "empty", text: "没有找到歌单。" }));
     for (const playlist of this.playlists) {
       const name = voiceSafeText(playlist?.name, "未命名歌单");
+      const coverLink = makeElement("button", {
+        type: "button",
+        className: "playlist-cover-button",
+        label: `浏览歌单 ${name}`,
+        title: "浏览歌单曲目",
+        dataset: { focusKey: `playlist-cover:${String(playlist?.id || "")}` },
+        on: { click: () => this._openPlaylist(playlist) },
+      }, [this._renderCover(playlist?.cover_art, name, "playlist-cover")]);
       const card = makeElement("article", { className: "playlist-card" }, [
-        this._renderCover(playlist?.cover_art, name, "playlist-cover"),
+        coverLink,
         makeElement("strong", { text: name }),
         makeElement("span", { text: `${Number(playlist?.song_count) || 0} 首 · ${voiceSafeText(playlist?.owner, "我的歌单")}` }),
         button("浏览曲目", () => this._openPlaylist(playlist), { className: "secondary card-button" }),
@@ -763,7 +857,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const section = makeElement("div", { className: "library-content" });
     const title = voiceSafeText(this.selectedPlaylist?.name, "歌单");
     section.append(makeElement("div", { className: "subheading" }, [
-      button("返回歌单", () => { this.selectedPlaylist = null; this._playlistTracksGate.cancel(); this._render(); }, { className: "back" }),
+      button("返回歌单", () => this._closePlaylist(), { className: "back", dataset: { focusKey: "playlist-back" } }),
       makeElement("h2", { text: title }),
       button("播放全部", () => this._queueCommand("queue_playlist", { playlist_id: String(this.selectedPlaylist.id), position: "replace" }), { className: "primary" }),
       button("下一首播放", () => this._queueCommand("queue_playlist", { playlist_id: String(this.selectedPlaylist.id), position: "next" }), { className: "secondary" }),
@@ -867,13 +961,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     return dialog;
   }
 
-  async _playPlaylistTrack(track) {
-    if (!this.selectedPlaylist?.id || !track?.id) return;
-    await this._queueCommand("queue_playlist", {
-      playlist_id: String(this.selectedPlaylist.id),
-      position: "replace",
-      start_track_id: String(track.id),
-    });
+  _playTrackPrimary(track, context) {
+    const action = trackPrimaryCommand(context, track?.id, this.selectedPlaylist?.id);
+    if (action) this._queueCommand(action.command, action.fields);
   }
 
   async _syncLibrary() {

@@ -110,7 +110,7 @@ h2 { font-size: 17px; }
   transition: background .16s ease, border-color .16s ease, transform .16s ease;
 }
 .control:hover, .secondary:hover, .row-button:hover, .option:hover, .transport-button:hover, .back:hover { background: var(--x-surface-strong); }
-.control:focus-visible, .secondary:focus-visible, .primary:focus-visible, .danger:focus-visible, .option:focus-visible, .row-button:focus-visible, .transport-button:focus-visible, .transport-main:focus-visible, .queue-track:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--x-primary) 45%, transparent); outline-offset: 2px; }
+.control:focus-visible, .secondary:focus-visible, .primary:focus-visible, .danger:focus-visible, .option:focus-visible, .row-button:focus-visible, .transport-button:focus-visible, .transport-main:focus-visible, .queue-track:focus-visible, .track-primary:focus-visible, .playlist-cover-button:focus-visible, .tab:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--x-primary) 45%, transparent); outline-offset: 2px; }
 .secondary, .row-button, .option { border-color: var(--x-border); background: var(--x-surface); }
 .primary, .transport-main { color: var(--x-primary-contrast); background: var(--x-primary); }
 .primary:hover, .transport-main:hover { filter: brightness(1.08); }
@@ -145,9 +145,35 @@ h2 { font-size: 17px; }
 .library-pane, .queue-pane { border: 1px solid var(--x-border); border-radius: 18px; background: var(--x-surface); box-shadow: var(--x-shadow); }
 .library-pane { grid-area: library; min-width: 0; overflow: hidden; }
 .queue-pane { grid-area: queue; align-self: start; min-width: 0; padding: 17px; }
-.tabs { display: flex; gap: 3px; padding: 10px 14px 0; border-bottom: 1px solid var(--x-border); }
-.tab { border-radius: 9px 9px 0 0; padding: 10px 16px; color: var(--x-muted); }
-.tab[aria-pressed="true"] { color: var(--x-primary); box-shadow: inset 0 -3px var(--x-primary); }
+.tabs {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  margin: 13px 16px 0;
+  padding: 4px;
+  border: 1px solid var(--x-border);
+  border-radius: 12px;
+  background: var(--x-bg);
+}
+.tab {
+  min-width: 78px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 9px;
+  padding: 7px 16px;
+  color: var(--x-muted);
+  font-weight: 600;
+  letter-spacing: .02em;
+  background: transparent;
+  transition: color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.tab:hover { color: var(--x-text); background: var(--x-surface-strong); }
+.tab[aria-selected="true"] {
+  color: var(--x-primary-contrast);
+  background: var(--x-primary);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--x-primary) 25%, transparent);
+}
+.tab:active { transform: translateY(1px); }
 .library-content { padding: 16px; }
 .search-wrap { position: relative; margin-bottom: 14px; }
 .search-icon { position: absolute; top: 8px; left: 11px; color: var(--x-muted); font-size: 20px; pointer-events: none; }
@@ -164,14 +190,31 @@ h2 { font-size: 17px; }
 .track-list { display: grid; gap: 7px; }
 .track-row {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 44px auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 11px;
-  padding: 7px;
+  gap: 7px;
+  padding: 4px;
   border: 1px solid transparent;
   border-radius: 12px;
 }
 .track-row:hover { border-color: var(--x-border); background: var(--x-surface-strong); }
+.track-primary {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  width: 100%;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  transition: background .16s ease, transform .16s ease;
+}
+.track-primary:hover { background: color-mix(in srgb, var(--x-primary) 8%, transparent); }
+.track-primary:active { transform: translateY(1px); }
 .track-copy { display: grid; min-width: 0; gap: 3px; }
 .track-copy strong { font-size: 14px; }
 .duration { text-align: right; font-variant-numeric: tabular-nums; }
@@ -189,6 +232,19 @@ h2 { font-size: 17px; }
 .playlist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .playlist-card { display: grid; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--x-border); border-radius: 13px; background: var(--x-bg); }
 .playlist-card strong, .playlist-card span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-cover-button {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  transition: box-shadow .16s ease, transform .16s ease;
+}
+.playlist-cover-button:hover { box-shadow: 0 8px 20px rgb(25 45 70 / .18); transform: translateY(-2px); }
+.playlist-cover-button:active { transform: translateY(0); }
+.playlist-cover-button .playlist-cover { pointer-events: none; }
 .card-button { justify-self: start; min-height: 31px; padding: 5px 8px; font-size: 12px; }
 .subheading { flex-wrap: wrap; gap: 8px; margin-bottom: 13px; }
 .subheading h2 { flex: 1 1 120px; }
@@ -234,9 +290,10 @@ h2 { font-size: 17px; }
 :host([narrow]) .header { grid-template-columns: 1fr; padding: 14px; }
 :host([narrow]) .header-actions { justify-content: flex-start; }
 :host([narrow]) .layout { grid-template-columns: 1fr; grid-template-areas: "queue" "library"; gap: 13px; }
-:host([narrow]) .track-row { grid-template-columns: 40px minmax(0, 1fr) auto; }
-:host([narrow]) .track-row .duration { display: none; }
-:host([narrow]) .row-actions { grid-column: 2 / -1; justify-content: flex-start; flex-wrap: wrap; }
+:host([narrow]) .track-row { grid-template-columns: 1fr; }
+:host([narrow]) .track-primary { grid-template-columns: 40px minmax(0, 1fr); }
+:host([narrow]) .track-primary .duration { display: none; }
+:host([narrow]) .row-actions { margin-left: 51px; justify-content: flex-start; flex-wrap: wrap; }
 :host([narrow]) .cover { width: 40px; height: 40px; }
 :host([narrow]) .queue-cover { width: 31px; height: 31px; }
 
