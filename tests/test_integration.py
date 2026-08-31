@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -12,7 +13,8 @@ import pytest
 from custom_components.xiaoai_navidrome import async_setup_entry
 from custom_components.xiaoai_navidrome.const import DOMAIN
 from custom_components.xiaoai_navidrome.diagnostics import async_get_config_entry_diagnostics
-from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Track
+from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Playlist, Track
+from custom_components.xiaoai_navidrome.queue import PlaybackQueue
 from custom_components.xiaoai_navidrome.runtime import (
     XiaoAINavidromeRuntime,
     _voice_error_category,
@@ -56,6 +58,25 @@ TRACKS = [
     Track("track-a", "Synthetic Alpha", "Example Artist", duration=300),
     Track("track-b", "Synthetic Beta", "Example Artist", duration=300),
 ]
+
+
+@pytest.fixture
+async def voice_queue(hass: HomeAssistant) -> PlaybackQueue:
+    """Create an empty real queue for delayed voice mutation tests."""
+    manager = PlaybackQueue(
+        hass,
+        "synthetic-voice-entry",
+        SimpleNamespace(),  # type: ignore[arg-type]
+        media_player=PLAYER,
+        max_tracks=20,
+        max_bit_rate=128,
+        share_ttl=timedelta(hours=1),
+        gap_seconds=0,
+    )
+    manager.test_calls = []  # type: ignore[attr-defined]
+    await manager.async_load()
+    yield manager
+    await manager.async_close()
 
 
 async def test_setup_service_voice_and_player_state_sync(
@@ -130,6 +151,10 @@ async def test_setup_service_voice_and_player_state_sync(
         runtime = hass.data[DOMAIN]["entries"][entry.entry_id]
         if runtime._sync_task is not None:
             await runtime._sync_task
+        initial_sensor_state = hass.states.get(SENSOR)
+        assert initial_sensor_state is not None
+        initial_identity = runtime._conversation_event_identity(initial_sensor_state)
+        assert initial_identity in runtime._processed_voice_events
         assert runtime.index_status()["track_count"] == 2
         assert runtime.index.autoplay_min_score == 0.91
         assert runtime.index.autoplay_min_margin == 0.19
@@ -201,6 +226,12 @@ async def test_setup_service_voice_and_player_state_sync(
         await hass.async_block_till_done()
         assert runtime.queue.status()["current"]["id"] == "track-b"
         assert create_stream.call_count == 2
+        sensor_state = hass.states.get(SENSOR)
+        assert sensor_state is not None
+        first_identity = runtime._conversation_event_identity(sensor_state)
+        assert first_identity is not None
+        assert first_identity.startswith("state_change:")
+        assert first_identity in runtime._processed_voice_events
 
         hass.states.async_set(
             SENSOR,
@@ -209,6 +240,10 @@ async def test_setup_service_voice_and_player_state_sync(
         )
         await hass.async_block_till_done()
         assert create_stream.call_count == 2
+        sensor_state = hass.states.get(SENSOR)
+        assert sensor_state is not None
+        assert runtime._conversation_event_identity(sensor_state) == first_identity
+        assert list(runtime._processed_voice_events).count(first_identity) == 1
 
         event_time = datetime.now(UTC).isoformat()
         hass.states.async_set(
@@ -423,3 +458,139 @@ async def test_voice_failure_log_hides_dynamic_share_identifier() -> None:
     )
     assert private_id not in str(warning.call_args)
     assert _voice_error_category(wrapped) == "protocol"
+
+
+def test_conversation_identity_rejects_stale_state_change_fallback() -> None:
+    """An old sensor state without record metadata is not a fresh voice event."""
+    stale = SimpleNamespace(
+        attributes={},
+        last_changed=datetime.now(UTC) - timedelta(minutes=2),
+    )
+    assert XiaoAINavidromeRuntime._conversation_event_identity(stale) is None  # type: ignore[arg-type]
+    future = SimpleNamespace(
+        attributes={"timestamp": (datetime.now(UTC) + timedelta(minutes=2)).isoformat()},
+        last_changed=datetime.now(UTC),
+    )
+    assert XiaoAINavidromeRuntime._conversation_event_identity(future) is None  # type: ignore[arg-type]
+
+
+def test_stable_conversation_id_is_processed_only_once() -> None:
+    """A refreshed record with one stable ID cannot be replayed later."""
+    scheduled: list[str] = []
+
+    def capture_task(_hass: Any, task: Any, name: str) -> None:
+        scheduled.append(name)
+        task.close()
+
+    runtime = object.__new__(XiaoAINavidromeRuntime)
+    runtime._closing = False
+    runtime._closed = False
+    runtime.options = ENTRY_OPTIONS
+    runtime.hass = SimpleNamespace()
+    runtime.entry = SimpleNamespace(
+        entry_id="synthetic-entry", async_create_background_task=capture_task
+    )
+    runtime.queue = SimpleNamespace(revision=7)
+    runtime._processed_voice_events = set()
+    first = SimpleNamespace(
+        state="播放家庭音乐Synthetic Alpha",
+        attributes={"conversation_id": "conversation-one"},
+        last_changed=datetime.now(UTC),
+    )
+    refreshed = SimpleNamespace(
+        state=first.state,
+        attributes={"conversation_id": "conversation-one", "synthetic_refresh": 99},
+        last_changed=first.last_changed,
+    )
+
+    runtime._async_conversation_changed(
+        SimpleNamespace(data={"old_state": None, "new_state": first})
+    )
+    runtime._async_conversation_changed(
+        SimpleNamespace(data={"old_state": first, "new_state": refreshed})
+    )
+
+    assert len(scheduled) == 1
+    assert runtime._processed_voice_events == {"conversation_id:conversation-one"}
+
+
+async def test_voice_play_execution_forwards_trigger_revision() -> None:
+    """Track and playlist work retain the revision captured by the event callback."""
+    runtime = object.__new__(XiaoAINavidromeRuntime)
+    runtime.async_play_query = AsyncMock()
+    runtime.async_play_playlist_query = AsyncMock()
+
+    await runtime._async_execute_voice(VoiceCommand("play", "synthetic track"), 17)
+    await runtime._async_execute_voice(VoiceCommand("play_playlist", "synthetic list"), 23)
+
+    runtime.async_play_query.assert_awaited_once_with("synthetic track", expected_revision=17)
+    runtime.async_play_playlist_query.assert_awaited_once_with(
+        "synthetic list", expected_revision=23
+    )
+
+
+async def test_delayed_voice_track_match_cannot_overwrite_cleared_queue(
+    voice_queue: PlaybackQueue,
+) -> None:
+    """A track match started before clear cannot replace the newer empty queue."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_match(_query: str) -> tuple[Track, dict[str, Any]]:
+        started.set()
+        await release.wait()
+        return Track("track-delayed", "Synthetic Delayed"), {"automatic": True}
+
+    runtime = object.__new__(XiaoAINavidromeRuntime)
+    runtime.queue = voice_queue
+    runtime._async_match_track = delayed_match  # type: ignore[method-assign]
+    task = asyncio.create_task(runtime.async_play_query("synthetic request"))
+    await started.wait()
+    await voice_queue.async_clear()
+    release.set()
+
+    with pytest.raises(HomeAssistantError, match="queue changed"):
+        await task
+    assert voice_queue.status()["items"] == []
+    assert voice_queue.test_calls == []  # type: ignore[attr-defined]
+
+
+async def test_delayed_voice_playlist_match_cannot_overwrite_cleared_queue(
+    voice_queue: PlaybackQueue,
+) -> None:
+    """A playlist match started before clear cannot replace the newer empty queue."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_playlists(*, fresh: bool) -> list[Playlist]:
+        assert fresh is True
+        started.set()
+        await release.wait()
+        return [Playlist("playlist-delayed", "Synthetic Playlist")]
+
+    async def run_executor(target: Any, *args: Any) -> Any:
+        return target(*args)
+
+    runtime = object.__new__(XiaoAINavidromeRuntime)
+    runtime.queue = voice_queue
+    runtime.hass = SimpleNamespace(async_add_executor_job=run_executor)
+    runtime.index = SimpleNamespace(
+        rank_playlists=lambda _query, _playlists: [
+            {"id": "playlist-delayed", "name": "Synthetic Playlist", "score": 1.0}
+        ],
+        autoplay_min_score=0.9,
+        autoplay_min_margin=0.1,
+    )
+    runtime.navidrome = SimpleNamespace(
+        async_playlist_tracks=AsyncMock(return_value=[Track("track-delayed", "Synthetic Delayed")])
+    )
+    runtime._async_playlists = delayed_playlists  # type: ignore[method-assign]
+    task = asyncio.create_task(runtime.async_play_playlist_query("synthetic request"))
+    await started.wait()
+    await voice_queue.async_clear()
+    release.set()
+
+    with pytest.raises(HomeAssistantError, match="queue changed"):
+        await task
+    assert voice_queue.status()["items"] == []
+    assert voice_queue.test_calls == []  # type: ignore[attr-defined]

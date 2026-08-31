@@ -79,8 +79,6 @@ from .voice import VoiceCommand, parse_voice_command
 _LOGGER = logging.getLogger(__name__)
 PLAYLIST_CACHE_SECONDS = 30
 PLAYLIST_MIN_SCORE = 0.15
-VOICE_DEBOUNCE_SECONDS = 5
-VOICE_EVENT_TTL_SECONDS = 120
 
 
 class MatchError(HomeAssistantError):
@@ -156,9 +154,7 @@ class XiaoAINavidromeRuntime:
         self._closing = False
         self._closed = False
         self._playlists_cache: tuple[float, list[Playlist]] = (0.0, [])
-        self._last_voice_signature = ""
-        self._last_voice_at = 0.0
-        self._processed_voice_events: dict[str, float] = {}
+        self._processed_voice_events: set[str] = set()
 
     def _index_options(self) -> dict[str, Any]:
         """Return one canonical set of matcher options for build and restore."""
@@ -225,6 +221,11 @@ class XiaoAINavidromeRuntime:
 
         conversation_sensor = self.options.get(CONF_CONVERSATION_SENSOR)
         if conversation_sensor:
+            current_conversation = self.hass.states.get(str(conversation_sensor))
+            if current_conversation is not None:
+                current_identity = self._conversation_event_identity(current_conversation)
+                if current_identity is not None:
+                    self._processed_voice_events.add(current_identity)
             self.entry.async_on_unload(
                 async_track_state_change_event(
                     self.hass,
@@ -524,13 +525,19 @@ class XiaoAINavidromeRuntime:
         query: str,
         *,
         media_player: str | None = None,
+        expected_revision: int | None = None,
         context: Context | None = None,
     ) -> dict[str, Any]:
-        """Resolve one track query and replace the queue."""
+        """Resolve one track query without overwriting a newer queue decision."""
+        if expected_revision is None:
+            expected_revision = self.queue.revision
         track, match = await self._async_match_track(query)
         try:
             queue = await self.queue.async_replace(
-                [track], media_player=media_player, context=context
+                [track],
+                media_player=media_player,
+                expected_revision=expected_revision,
+                context=context,
             )
         except QueueError as err:
             raise HomeAssistantError(str(err)) from err
@@ -541,9 +548,12 @@ class XiaoAINavidromeRuntime:
         query: str,
         *,
         media_player: str | None = None,
+        expected_revision: int | None = None,
         context: Context | None = None,
     ) -> dict[str, Any]:
-        """Resolve one playlist query and replace the queue."""
+        """Resolve one playlist query without overwriting a newer queue decision."""
+        if expected_revision is None:
+            expected_revision = self.queue.revision
         playlists = await self._async_playlists(fresh=True)
         ranked = await self.hass.async_add_executor_job(self.index.rank_playlists, query, playlists)
         if not ranked:
@@ -557,7 +567,10 @@ class XiaoAINavidromeRuntime:
         tracks = await self.navidrome.async_playlist_tracks(str(ranked[0]["id"]))
         try:
             queue = await self.queue.async_replace(
-                tracks, media_player=media_player, context=context
+                tracks,
+                media_player=media_player,
+                expected_revision=expected_revision,
+                context=context,
             )
         except QueueError as err:
             raise HomeAssistantError(str(err)) from err
@@ -591,8 +604,13 @@ class XiaoAINavidromeRuntime:
         """Schedule processing for a fresh conversation sensor state."""
         if self._closing or self._closed:
             return
+        old_state: State | None = event.data.get("old_state")
         new_state: State | None = event.data.get("new_state")
-        if new_state is None:
+        if new_state is None or (
+            old_state is not None
+            and old_state.state == new_state.state
+            and old_state.attributes == new_state.attributes
+        ):
             return
         event_identity = self._conversation_event_identity(new_state)
         if event_identity is None:
@@ -604,28 +622,12 @@ class XiaoAINavidromeRuntime:
         )
         if command is None:
             return
-        signature = f"{command.action}\0{command.query}"
-        now = time.monotonic()
-        self._processed_voice_events = {
-            key: seen_at
-            for key, seen_at in self._processed_voice_events.items()
-            if now - seen_at < VOICE_EVENT_TTL_SECONDS
-        }
-        if event_identity:
-            if event_identity in self._processed_voice_events:
-                return
-            self._processed_voice_events[event_identity] = now
-        else:
-            if (
-                signature == self._last_voice_signature
-                and now - self._last_voice_at < VOICE_DEBOUNCE_SECONDS
-            ):
-                return
-            self._last_voice_signature = signature
-            self._last_voice_at = now
+        if event_identity in self._processed_voice_events:
+            return
+        self._processed_voice_events.add(event_identity)
         self.entry.async_create_background_task(
             self.hass,
-            self._async_execute_voice(command),
+            self._async_execute_voice(command, self.queue.revision),
             f"{self.entry.entry_id} XiaoAI Navidrome voice command",
         )
 
@@ -635,29 +637,38 @@ class XiaoAINavidromeRuntime:
         timestamp = state.attributes.get("timestamp")
         if timestamp:
             parsed = dt_util.parse_datetime(str(timestamp))
-            if parsed and datetime.now(UTC) - dt_util.as_utc(parsed) > timedelta(seconds=60):
+            if parsed is None:
                 return None
-            if parsed:
-                return f"timestamp:{dt_util.as_utc(parsed).isoformat()}"
+            parsed_utc = dt_util.as_utc(parsed)
+            if abs(datetime.now(UTC) - parsed_utc) > timedelta(seconds=60):
+                return None
+            return f"timestamp:{parsed_utc.isoformat()}"
         for key in ("conversation_id", "sequence"):
             value = state.attributes.get(key)
             if value is not None and str(value).strip():
                 return f"{key}:{value!s}"
-        return ""
+        changed_at = dt_util.as_utc(state.last_changed)
+        if abs(datetime.now(UTC) - changed_at) > timedelta(seconds=60):
+            return None
+        return f"state_change:{changed_at.isoformat()}"
 
-    async def _async_execute_voice(self, command: VoiceCommand) -> None:
+    async def _async_execute_voice(
+        self, command: VoiceCommand, expected_revision: int | None = None
+    ) -> None:
         """Execute one parsed command without any YAML automation."""
         try:
             if command.action == "play":
-                await self.async_play_query(command.query)
+                await self.async_play_query(command.query, expected_revision=expected_revision)
             elif command.action == "play_playlist":
-                await self.async_play_playlist_query(command.query)
+                await self.async_play_playlist_query(
+                    command.query, expected_revision=expected_revision
+                )
             elif command.action == "previous":
-                await self.queue.async_previous()
+                await self.queue.async_previous(expected_revision=expected_revision)
             elif command.action == "next":
-                await self.queue.async_next()
+                await self.queue.async_next(expected_revision=expected_revision)
             elif command.action == "stop":
-                await self.queue.async_stop()
+                await self.queue.async_stop(expected_revision=expected_revision)
         except (MatchError, NavidromeError, QueueError, HomeAssistantError) as err:
             _LOGGER.warning(
                 "Unable to handle XiaoAI Navidrome voice command (%s error)",
