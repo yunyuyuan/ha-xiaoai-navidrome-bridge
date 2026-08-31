@@ -1,0 +1,68 @@
+name: Release HACS integration
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tagged source
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+      - name: Verify version metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          test "$(jq -r .version custom_components/xiaoai_navidrome/manifest.json)" = "$version"
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)" = "$version"
+          grep -Fq "VERSION: Final = \"$version\"" custom_components/xiaoai_navidrome/const.py
+          grep -Fq "## [$version]" CHANGELOG.md
+      - name: Install pinned test environment
+        run: make setup
+      - name: Run complete quality gate
+        run: make check
+      - name: Run Hassfest
+        uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb
+      - name: Run HACS validation
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
+        with:
+          category: integration
+          ignore: brands
+
+  release:
+    name: Create GitHub Release
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "XiaoAI Navidrome $GITHUB_REF_NAME" \
+            --notes $'Home Assistant-native HACS integration for playing Navidrome music on XiaoAI speakers.\n\nInstall it as a HACS custom integration and complete the Config Flow in Home Assistant.' \
+            --generate-notes

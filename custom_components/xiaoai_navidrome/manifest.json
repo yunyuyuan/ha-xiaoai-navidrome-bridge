@@ -1,0 +1,18 @@
+{
+  "domain": "xiaoai_navidrome",
+  "name": "XiaoAI Navidrome",
+  "codeowners": ["@yunyuyuan"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/yunyuyuan/ha-xiaoai-navidrome-bridge",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/yunyuyuan/ha-xiaoai-navidrome-bridge/issues",
+  "requirements": [
+    "opencc-python-reimplemented==0.1.7",
+    "pypinyin==0.55.0",
+    "pykakasi==2.3.0"
+  ],
+  "single_config_entry": true,
+  "version": "1.0.0"
+}

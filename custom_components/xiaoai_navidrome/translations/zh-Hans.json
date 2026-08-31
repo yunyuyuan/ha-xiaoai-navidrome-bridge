@@ -1,0 +1,124 @@
+{
+  "title": "小爱 Navidrome",
+  "config": {
+    "step": {
+      "user": {
+        "title": "连接 Navidrome",
+        "description": "Home Assistant 将直接连接 Navidrome，不需要 Bridge 容器或 Home Assistant 长期令牌。",
+        "data": {
+          "navidrome_url": "Navidrome 地址",
+          "share_url": "Navidrome 对外分享地址（可选）",
+          "username": "用户名",
+          "password": "密码",
+          "verify_ssl": "验证 TLS 证书"
+        }
+      },
+      "playback": {
+        "title": "播放、语音和匹配",
+        "description": "选择兼容的小爱播放设备。conversation 传感器为可选项；选择后，集成会直接处理语音口令，不再需要 YAML 自动化。",
+        "data": {
+          "media_player": "默认小爱播放设备",
+          "conversation_sensor": "小爱 conversation 传感器",
+          "track_phrase": "单曲口令",
+          "playlist_phrase": "歌单口令",
+          "max_bit_rate": "MP3 最大码率",
+          "share_ttl_hours": "临时分享有效期",
+          "queue_max_tracks": "队列最大曲目数",
+          "playlist_gap_seconds": "曲目间隔",
+          "index_refresh_minutes": "曲库刷新间隔",
+          "embedding_enabled": "启用语义匹配",
+          "embedding_provider": "Embedding 服务类型",
+          "embedding_url": "Embedding 服务地址",
+          "embedding_model": "Embedding 模型",
+          "embedding_api_key": "Embedding API 密钥",
+          "autoplay_min_score": "词法自动播放最低分",
+          "autoplay_min_margin": "词法自动播放最小分差",
+          "embedding_weight": "Embedding 分数权重",
+          "semantic_autoplay_min_score": "语义自动播放最低分",
+          "semantic_autoplay_min_margin": "语义自动播放最小分差"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新认证 Navidrome",
+        "description": "输入当前 Navidrome 密码。",
+        "data": {"password": "密码"}
+      },
+      "reconfigure": {
+        "title": "重新配置 Navidrome",
+        "data": {
+          "navidrome_url": "Navidrome 地址",
+          "share_url": "Navidrome 对外分享地址（可选）",
+          "username": "用户名",
+          "password": "密码",
+          "verify_ssl": "验证 TLS 证书"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法连接 Navidrome",
+      "invalid_auth": "Navidrome 用户名或密码错误",
+      "invalid_url": "请输入不含凭据、查询参数或片段的有效 HTTP 或 HTTPS 地址",
+      "invalid_response": "Navidrome 返回了无效或不支持的响应"
+    },
+    "abort": {
+      "already_configured": "此 Navidrome 账户已经配置",
+      "reauth_successful": "重新认证成功",
+      "reconfigure_successful": "重新配置成功"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "播放、语音和匹配",
+        "description": "选择兼容的播放设备。conversation 传感器为可选项；选择后，集成会在内部处理语音口令，不再需要 YAML 自动化。",
+        "data": {
+          "media_player": "默认小爱播放设备",
+          "conversation_sensor": "小爱 conversation 传感器",
+          "track_phrase": "单曲口令",
+          "playlist_phrase": "歌单口令",
+          "max_bit_rate": "MP3 最大码率",
+          "share_ttl_hours": "临时分享有效期",
+          "queue_max_tracks": "队列最大曲目数",
+          "playlist_gap_seconds": "曲目间隔",
+          "index_refresh_minutes": "曲库刷新间隔",
+          "embedding_enabled": "启用语义匹配",
+          "embedding_provider": "Embedding 服务类型",
+          "embedding_url": "Embedding 服务地址",
+          "embedding_model": "Embedding 模型",
+          "embedding_api_key": "Embedding API 密钥",
+          "clear_embedding_api_key": "清除已保存的 Embedding API 密钥",
+          "autoplay_min_score": "词法自动播放最低分",
+          "autoplay_min_margin": "词法自动播放最小分差",
+          "embedding_weight": "Embedding 分数权重",
+          "semantic_autoplay_min_score": "语义自动播放最低分",
+          "semantic_autoplay_min_margin": "语义自动播放最小分差"
+        }
+      }
+    }
+  },
+  "services": {
+    "play": {
+      "name": "播放单曲",
+      "description": "匹配 Navidrome 曲目、替换队列并开始播放。",
+      "fields": {
+        "query": {"name": "查询", "description": "曲名、歌手或语音查询。"},
+        "media_player": {"name": "播放设备", "description": "可选的本次播放设备。"},
+        "config_entry_id": {"name": "配置条目", "description": "目标集成实例。"}
+      }
+    },
+    "play_playlist": {
+      "name": "播放歌单",
+      "description": "匹配 Navidrome 歌单、替换队列并开始播放。",
+      "fields": {
+        "query": {"name": "查询", "description": "歌单名称或语音查询。"},
+        "media_player": {"name": "播放设备", "description": "可选的本次播放设备。"},
+        "config_entry_id": {"name": "配置条目", "description": "目标集成实例。"}
+      }
+    },
+    "previous": {"name": "上一首", "description": "播放队列中的上一首。"},
+    "next": {"name": "下一首", "description": "播放队列中的下一首。"},
+    "stop": {"name": "停止", "description": "停止播放并取消队列自动切歌。"},
+    "clear_queue": {"name": "清空队列", "description": "停止播放并移除队列中的全部曲目。"},
+    "sync_library": {"name": "同步曲库", "description": "从 Navidrome 同步本地多语种搜索索引。"}
+  }
+}

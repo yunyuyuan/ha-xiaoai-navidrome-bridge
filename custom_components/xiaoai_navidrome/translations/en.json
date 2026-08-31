@@ -1,0 +1,124 @@
+{
+  "title": "XiaoAI Navidrome",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Navidrome",
+        "description": "Connect Home Assistant directly to Navidrome. No bridge container or Home Assistant access token is required.",
+        "data": {
+          "navidrome_url": "Navidrome URL",
+          "share_url": "Public Navidrome share URL (optional)",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify TLS certificate"
+        }
+      },
+      "playback": {
+        "title": "Playback, voice and matching",
+        "description": "Select a compatible XiaoAI media player. The conversation sensor is optional; when selected, voice phrases are handled without YAML automations.",
+        "data": {
+          "media_player": "Default XiaoAI media player",
+          "conversation_sensor": "XiaoAI conversation sensor",
+          "track_phrase": "Track command phrase",
+          "playlist_phrase": "Playlist command phrase",
+          "max_bit_rate": "MP3 maximum bitrate",
+          "share_ttl_hours": "Temporary share lifetime",
+          "queue_max_tracks": "Maximum queue size",
+          "playlist_gap_seconds": "Gap between tracks",
+          "index_refresh_minutes": "Library refresh interval",
+          "embedding_enabled": "Enable semantic matching",
+          "embedding_provider": "Embedding provider",
+          "embedding_url": "Embedding server URL",
+          "embedding_model": "Embedding model",
+          "embedding_api_key": "Embedding API key",
+          "autoplay_min_score": "Lexical autoplay minimum score",
+          "autoplay_min_margin": "Lexical autoplay minimum margin",
+          "embedding_weight": "Embedding score weight",
+          "semantic_autoplay_min_score": "Semantic autoplay minimum score",
+          "semantic_autoplay_min_margin": "Semantic autoplay minimum margin"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Navidrome",
+        "description": "Enter the current Navidrome password.",
+        "data": {"password": "Password"}
+      },
+      "reconfigure": {
+        "title": "Reconfigure Navidrome",
+        "data": {
+          "navidrome_url": "Navidrome URL",
+          "share_url": "Public Navidrome share URL (optional)",
+          "username": "Username",
+          "password": "Password",
+          "verify_ssl": "Verify TLS certificate"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to Navidrome",
+      "invalid_auth": "Invalid Navidrome credentials",
+      "invalid_url": "Enter a valid HTTP or HTTPS URL without credentials, query parameters, or fragments",
+      "invalid_response": "Navidrome returned an invalid or unsupported response"
+    },
+    "abort": {
+      "already_configured": "This Navidrome account is already configured",
+      "reauth_successful": "Reauthentication successful",
+      "reconfigure_successful": "Reconfiguration successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Playback, voice and matching",
+        "description": "Select a compatible media player. The conversation sensor is optional; when selected, voice phrases are handled inside this integration without YAML automations.",
+        "data": {
+          "media_player": "Default XiaoAI media player",
+          "conversation_sensor": "XiaoAI conversation sensor",
+          "track_phrase": "Track command phrase",
+          "playlist_phrase": "Playlist command phrase",
+          "max_bit_rate": "MP3 maximum bitrate",
+          "share_ttl_hours": "Temporary share lifetime",
+          "queue_max_tracks": "Maximum queue size",
+          "playlist_gap_seconds": "Gap between tracks",
+          "index_refresh_minutes": "Library refresh interval",
+          "embedding_enabled": "Enable semantic matching",
+          "embedding_provider": "Embedding provider",
+          "embedding_url": "Embedding server URL",
+          "embedding_model": "Embedding model",
+          "embedding_api_key": "Embedding API key",
+          "clear_embedding_api_key": "Clear the stored Embedding API key",
+          "autoplay_min_score": "Lexical autoplay minimum score",
+          "autoplay_min_margin": "Lexical autoplay minimum margin",
+          "embedding_weight": "Embedding score weight",
+          "semantic_autoplay_min_score": "Semantic autoplay minimum score",
+          "semantic_autoplay_min_margin": "Semantic autoplay minimum margin"
+        }
+      }
+    }
+  },
+  "services": {
+    "play": {
+      "name": "Play track",
+      "description": "Match a track in Navidrome, replace the queue and play it.",
+      "fields": {
+        "query": {"name": "Query", "description": "Track title, artist or spoken query."},
+        "media_player": {"name": "Media player", "description": "Optional player override."},
+        "config_entry_id": {"name": "Config entry", "description": "Target integration instance."}
+      }
+    },
+    "play_playlist": {
+      "name": "Play playlist",
+      "description": "Match a Navidrome playlist, replace the queue and play it.",
+      "fields": {
+        "query": {"name": "Query", "description": "Playlist name or spoken query."},
+        "media_player": {"name": "Media player", "description": "Optional player override."},
+        "config_entry_id": {"name": "Config entry", "description": "Target integration instance."}
+      }
+    },
+    "previous": {"name": "Previous track", "description": "Play the previous queue item."},
+    "next": {"name": "Next track", "description": "Play the next queue item."},
+    "stop": {"name": "Stop", "description": "Stop playback and cancel automatic queue advancement."},
+    "clear_queue": {"name": "Clear queue", "description": "Stop playback and remove every queue item."},
+    "sync_library": {"name": "Sync library", "description": "Synchronize the local multilingual search index with Navidrome."}
+  }
+}

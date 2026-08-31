@@ -1,0 +1,75 @@
+play:
+  fields:
+    query:
+      required: true
+      example: "Example Track"
+      selector:
+        text:
+    media_player:
+      required: false
+      selector:
+        entity:
+          domain: media_player
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+play_playlist:
+  fields:
+    query:
+      required: true
+      example: "Example Playlist"
+      selector:
+        text:
+    media_player:
+      required: false
+      selector:
+        entity:
+          domain: media_player
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+previous:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+next:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+stop:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+clear_queue:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
+sync_library:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome

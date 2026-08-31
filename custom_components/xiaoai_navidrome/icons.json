@@ -1,0 +1,11 @@
+{
+  "services": {
+    "play": {"service": "mdi:play-circle"},
+    "play_playlist": {"service": "mdi:playlist-play"},
+    "previous": {"service": "mdi:skip-previous"},
+    "next": {"service": "mdi:skip-next"},
+    "stop": {"service": "mdi:stop-circle"},
+    "clear_queue": {"service": "mdi:playlist-remove"},
+    "sync_library": {"service": "mdi:sync"}
+  }
+}

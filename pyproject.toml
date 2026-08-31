@@ -1,0 +1,49 @@
+[project]
+name = "xiaoai-navidrome"
+version = "1.0.0"
+description = "Home Assistant custom integration for playing Navidrome on XiaoAI speakers"
+requires-python = ">=3.14"
+license = "Apache-2.0"
+dependencies = [
+  "opencc-python-reimplemented==0.1.7",
+  "pypinyin==0.55.0",
+  "pykakasi==2.3.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["custom_components", "tests"]
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "C4", "E", "F", "I", "N", "PERF", "PIE", "PL", "RUF", "SIM", "UP"]
+ignore = ["PLR0913"]
+
+[tool.ruff.lint.per-file-ignores]
+"custom_components/xiaoai_navidrome/voice.py" = ["RUF001"]
+"tests/*" = ["PLR0915", "PLR2004", "RUF001"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.14"
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_ignores = true
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["opencc.*", "pypinyin.*", "pykakasi.*"]
+ignore_missing_imports = true
