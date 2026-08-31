@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "xiaoai_navidrome"
 NAME: Final = "XiaoAI Navidrome"
-VERSION: Final = "1.0.0"
+VERSION: Final = "1.0.1"
 
 CONF_NAVIDROME_URL: Final = "navidrome_url"
 CONF_SHARE_URL: Final = "share_url"
@@ -55,6 +55,7 @@ SERVICE_PLAY: Final = "play"
 SERVICE_PLAY_PLAYLIST: Final = "play_playlist"
 SERVICE_PREVIOUS: Final = "previous"
 SERVICE_NEXT: Final = "next"
+SERVICE_RESUME: Final = "resume"
 SERVICE_STOP: Final = "stop"
 SERVICE_CLEAR_QUEUE: Final = "clear_queue"
 SERVICE_SYNC_LIBRARY: Final = "sync_library"

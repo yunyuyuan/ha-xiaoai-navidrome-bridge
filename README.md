@@ -50,7 +50,7 @@ Panel 通过 Home Assistant 已有登录会话调用集成 WebSocket 命令，�
 | 安装方式 | 已安装 HACS；也可手工复制 `custom_components/xiaoai_navidrome` |
 | Navidrome | **v0.63.2 或更高版本**，可从 Home Assistant 访问 |
 | Navidrome 分享 | `EnableSharing=true`；官方默认开启。反向代理必须允许 `/share/` [3] |
-| 分享公网地址 | 音箱必须能访问 Navidrome 生成的 share URL；内外地址不同需配置 `ND_SHAREURL`，并在集成中填写相同“对外分享地址” [4] |
+| 分享公网地址 | 音箱必须能访问 Navidrome 生成的 share URL；内外地址不同时配置 `ND_SHAREURL`。集成可从 M3U 自动识别该公开地址，也可用“对外分享地址”显式固定 [4] |
 | 播放实体 | 支持 `media_player.play_media`，并支持 `media_pause` 或 `media_stop` |
 | 语音实体 | 可选；由米家集成提供、状态值包含小爱识别文本的 conversation `sensor` |
 
@@ -85,7 +85,7 @@ https://github.com/yunyuyuan/ha-xiaoai-navidrome-bridge
 | Navidrome 连接 | API 服务地址、可选对外分享地址、用户名、密码、TLS 证书验证 |
 | 播放与匹配 | 默认小爱播放器、可选 conversation 传感器、语音前缀、队列参数和可选 Embedding |
 
-连接验证会检查 Subsonic 鉴权、Navidrome 原生登录，以及在非空曲库中创建并删除一次五分钟测试 share。配置完成后，集成在后台同步曲库；刷新期间当前索引仍可使用。
+连接验证会检查 Subsonic 鉴权、Navidrome 原生登录，以及在非空曲库中创建并删除一次五分钟测试 share。任何一步失败都会在 Home Assistant 日志中标明 `Subsonic ping`、`native login`、`library probe` 或 `share probe`，但不会记录密码。配置完成后，集成在后台同步曲库；刷新期间当前索引仍可使用。
 
 Navidrome 通过反向代理公开时，建议填写音箱也能访问的 HTTPS 地址，例如：
 
@@ -99,7 +99,7 @@ https://music.example.com
 ND_SHAREURL=https://music.example.com
 ```
 
-同时在 Config Flow 第一页的 **Navidrome 对外分享地址** 填写同一地址。集成始终通过内部 API 地址完成鉴权、曲库访问、share 创建和 M3U 获取，只把经过严格校验的公开 `/share/s/` 音频地址发给音箱。确认反向代理放行 `/share/`。
+Config Flow 第一页的 **Navidrome 对外分享地址** 可以留空：集成会从测试 share 的 M3U 中识别公开 origin，并要求同一 M3U 的全部条目使用同一 origin 和 `/share/s/` 路径。若希望固定允许的公开 origin，也可以在该字段填写与 `ND_SHAREURL` 相同的地址。集成始终通过内部 API 地址完成鉴权、曲库访问、share 创建和 M3U 获取，只把经过校验的公开音频地址发给音箱。确认反向代理放行 `/share/`。
 
 ### 3. 首次检查
 
@@ -152,6 +152,7 @@ Panel 支持曲库和歌单分页、搜索、封面与详情、随机、循环�
 | `xiaoai_navidrome.play_playlist` | `query`，可选 `media_player` | 歌单匹配和队列状态 |
 | `xiaoai_navidrome.previous` | 无 | 队列状态 |
 | `xiaoai_navidrome.next` | 无 | 队列状态 |
+| `xiaoai_navidrome.resume` | 无 | 从保留的当前位置继续播放并返回队列状态 |
 | `xiaoai_navidrome.stop` | 无 | 队列状态 |
 | `xiaoai_navidrome.clear_queue` | 无 | 队列状态 |
 | `xiaoai_navidrome.sync_library` | 无 | 索引状态 |
@@ -198,7 +199,7 @@ Ollama、Qwen3 Embedding 和低功耗 NAS 配置见 [`docs/local-model-research.
 | 现象 | 优先检查 |
 |---|---|
 | Config Flow 提示无法连接 | Navidrome 地址、容器网络、TLS 证书和普通用户凭据 |
-| 提示响应无效 | Navidrome 版本、分享功能和反向代理 `/share/` 路由 |
+| 提示响应无效 | 在 HA 日志搜索 `Navidrome setup validation failed`，根据其中的校验阶段检查 Navidrome 原生 API、分享功能或 `/share/` 路由 |
 | Panel 有队列但音箱无声 | 音箱能否访问 `ND_SHAREURL` 生成的地址；播放器是否支持 URL `play_media` |
 | 暂停后仍自动下一首 | HA 中该实体是否真的从 `playing` 变为 `paused/off/standby`；下载集成诊断并检查实体 ID |
 | 曲库新增后未出现 | 等待刷新周期，或调用 `xiaoai_navidrome.sync_library` / Panel 的“同步曲库” |
@@ -206,6 +207,14 @@ Ollama、Qwen3 Embedding 和低功耗 NAS 配置见 [`docs/local-model-research.
 | 语音无反应 | conversation 传感器当前状态、配置的口令前缀、HA 日志中的集成警告 |
 
 在 **设置 → 设备与服务 → XiaoAI Navidrome → 下载诊断** 获取脱敏状态。诊断不包含密码、API Key、曲目元数据、查询文本或语音记录。
+
+初始化阶段的日志可在 **设置 → 系统 → 日志** 中搜索 `xiaoai_navidrome`。你的 Home Assistant 容器名为 `homeassistant` 时，也可以直接执行：
+
+```bash
+docker logs --since 10m homeassistant 2>&1 | grep -iE 'xiaoai_navidrome|Navidrome setup validation'
+```
+
+`127.0.0.1` 始终指向 Home Assistant 进程所在的网络命名空间。Home Assistant 使用 host network 时它可以访问宿主机端口；使用普通 Docker bridge、HA OS 或远端 Navidrome 时，应填写该环境实际可达的局域网地址或服务名。
 
 ## 开发与发布
 

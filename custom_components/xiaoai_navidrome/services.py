@@ -20,6 +20,7 @@ from .const import (
     SERVICE_PLAY,
     SERVICE_PLAY_PLAYLIST,
     SERVICE_PREVIOUS,
+    SERVICE_RESUME,
     SERVICE_STOP,
     SERVICE_SYNC_LIBRARY,
 )
@@ -84,6 +85,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         result = await _runtime(hass, call).queue.async_next(context=call.context)
         return result if call.return_response else None
 
+    async def handle_resume(call: ServiceCall) -> ServiceResponse | None:
+        result = await _runtime(hass, call).queue.async_play(context=call.context)
+        return result if call.return_response else None
+
     async def handle_stop(call: ServiceCall) -> ServiceResponse | None:
         result = await _runtime(hass, call).queue.async_stop(context=call.context)
         return result if call.return_response else None
@@ -101,6 +106,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_PLAY_PLAYLIST: (handle_playlist, _QUERY_SCHEMA),
         SERVICE_PREVIOUS: (handle_previous, _ENTRY_SCHEMA),
         SERVICE_NEXT: (handle_next, _ENTRY_SCHEMA),
+        SERVICE_RESUME: (handle_resume, _ENTRY_SCHEMA),
         SERVICE_STOP: (handle_stop, _ENTRY_SCHEMA),
         SERVICE_CLEAR_QUEUE: (handle_clear, _ENTRY_SCHEMA),
         SERVICE_SYNC_LIBRARY: (handle_sync, _ENTRY_SCHEMA),

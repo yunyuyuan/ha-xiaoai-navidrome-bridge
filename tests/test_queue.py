@@ -8,7 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from custom_components.xiaoai_navidrome.model import Track
+from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Track
 from custom_components.xiaoai_navidrome.queue import (
     PlaybackQueue,
     QueueClosedError,
@@ -88,6 +88,21 @@ async def test_replace_next_previous_and_cached_share(queue: PlaybackQueue) -> N
     previous = await queue.async_previous(expected_revision=second["revision"])
     assert previous["current_index"] == 0
     assert len(queue.navidrome.created) == 1  # type: ignore[attr-defined]
+
+
+async def test_playback_error_hides_dynamic_share_identifier(queue: PlaybackQueue) -> None:
+    """A failed M3U request cannot expose its capability identifier."""
+    private_id = "synthetic-private-share-capability"
+    queue.navidrome.async_create_stream_urls = AsyncMock(  # type: ignore[method-assign]
+        side_effect=NavidromeProtocolError(f"GET share/{private_id}/m3u returned HTTP 500")
+    )
+
+    with pytest.raises(QueuePlayerError) as raised:
+        await queue.async_replace([Track("synthetic-track", duration=30)])
+
+    assert private_id not in str(raised.value)
+    assert private_id not in queue.status()["last_error"]
+    assert queue.status()["last_error"] == "Navidrome returned an invalid playback response"
 
 
 async def test_external_pause_cancels_automatic_advance(queue: PlaybackQueue) -> None:

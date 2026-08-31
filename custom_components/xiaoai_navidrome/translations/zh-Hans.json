@@ -117,6 +117,7 @@
     },
     "previous": {"name": "上一首", "description": "播放队列中的上一首。"},
     "next": {"name": "下一首", "description": "播放队列中的下一首。"},
+    "resume": {"name": "继续播放", "description": "从停止队列的当前位置继续播放。"},
     "stop": {"name": "停止", "description": "停止播放并取消队列自动切歌。"},
     "clear_queue": {"name": "清空队列", "description": "停止播放并移除队列中的全部曲目。"},
     "sync_library": {"name": "同步曲库", "description": "从 Navidrome 同步本地多语种搜索索引。"}

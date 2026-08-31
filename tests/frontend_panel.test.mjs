@@ -6,6 +6,7 @@ const moduleUrl = new URL("../custom_components/xiaoai_navidrome/frontend/panel.
 const {
   RequestGate,
   coverApiPath,
+  coverClassNames,
   cycleRepeat,
   formatDuration,
   queueStatus,
@@ -40,6 +41,14 @@ test("cover requests use one relative authenticated Home Assistant path", async 
   const source = await readFile(moduleUrl, "utf8");
   assert.equal(source.includes("fetchWithAuth(this.owner.hass.hassUrl"), false);
   assert.equal(source.includes("fetchWithAuth(path)"), true);
+});
+
+test("specialized covers retain the shared image crop class", () => {
+  assert.equal(coverClassNames(), "cover cover-placeholder");
+  assert.equal(
+    coverClassNames("playlist-cover"),
+    "cover playlist-cover cover-placeholder",
+  );
 });
 
 test("panel accepts only the current WebSocket response shapes", () => {

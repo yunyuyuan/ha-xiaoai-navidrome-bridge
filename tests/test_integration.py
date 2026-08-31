@@ -12,11 +12,15 @@ import pytest
 from custom_components.xiaoai_navidrome import async_setup_entry
 from custom_components.xiaoai_navidrome.const import DOMAIN
 from custom_components.xiaoai_navidrome.diagnostics import async_get_config_entry_diagnostics
-from custom_components.xiaoai_navidrome.model import Track
-from custom_components.xiaoai_navidrome.runtime import XiaoAINavidromeRuntime
+from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Track
+from custom_components.xiaoai_navidrome.runtime import (
+    XiaoAINavidromeRuntime,
+    _voice_error_category,
+)
+from custom_components.xiaoai_navidrome.voice import VoiceCommand
 from homeassistant.components.media_player.const import MediaPlayerEntityFeature
 from homeassistant.core import Context, HomeAssistant, ServiceCall
-from homeassistant.exceptions import Unauthorized
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
@@ -182,6 +186,16 @@ async def test_setup_service_voice_and_player_state_sync(
         await hass.async_block_till_done()
         assert runtime.queue.status()["state"] == "stopped"
 
+        response = await hass.services.async_call(
+            DOMAIN,
+            "resume",
+            blocking=True,
+            return_response=True,
+        )
+        assert response["state"] == "playing"
+        assert media_calls[-1][0] == "play_media"
+        assert create_stream.call_count == 3
+
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)
         serialized_diagnostics = repr(diagnostics)
         assert "navidrome.invalid" not in serialized_diagnostics
@@ -292,3 +306,23 @@ async def test_manual_sync_is_cancelled_before_runtime_reload(
     assert stored is not None
     assert [item["track"]["id"] for item in stored["tracks"]] == ["new-track"]
     await new.async_close()
+
+
+async def test_voice_failure_log_hides_dynamic_share_identifier() -> None:
+    """Voice errors log a fixed category rather than exception text."""
+    private_id = "synthetic-private-share-capability"
+    root = NavidromeProtocolError(f"GET share/{private_id}/m3u returned HTTP 500")
+    wrapped = HomeAssistantError("Playback operation failed")
+    wrapped.__cause__ = root
+    runtime = object.__new__(XiaoAINavidromeRuntime)
+    runtime.async_play_query = AsyncMock(side_effect=wrapped)
+
+    with patch("custom_components.xiaoai_navidrome.runtime._LOGGER.warning") as warning:
+        await runtime._async_execute_voice(VoiceCommand("play", "synthetic query"))
+
+    warning.assert_called_once_with(
+        "Unable to handle XiaoAI Navidrome voice command (%s error)",
+        "protocol",
+    )
+    assert private_id not in str(warning.call_args)
+    assert _voice_error_category(wrapped) == "protocol"

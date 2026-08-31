@@ -19,10 +19,16 @@ from homeassistant.components.media_player.const import (
 )
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
 from .const import EVENT_QUEUE_UPDATED, STORAGE_KEY_PREFIX, STORAGE_VERSION
-from .model import Track
+from .model import (
+    NavidromeAuthError,
+    NavidromeConnectionError,
+    NavidromeError,
+    Track,
+)
 from .navidrome import NavidromeClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,6 +61,21 @@ class QueueConflictError(QueueError):
 
 class QueueClosedError(QueueError):
     """Raised when a mutation races with Config Entry unload."""
+
+
+def _safe_playback_error(err: Exception) -> str:
+    """Return a useful playback error without upstream paths or user data."""
+    if isinstance(err, NavidromeAuthError):
+        return "Navidrome authentication failed"
+    if isinstance(err, NavidromeConnectionError):
+        return "Unable to connect to Navidrome"
+    if isinstance(err, NavidromeError):
+        return "Navidrome returned an invalid playback response"
+    if isinstance(err, QueueClosedError):
+        return "The playback queue is unloading"
+    if isinstance(err, HomeAssistantError):
+        return "Home Assistant media player control failed"
+    return "Playback operation failed"
 
 
 class PlaybackQueue:
@@ -227,7 +248,7 @@ class PlaybackQueue:
                 try:
                     await self._async_stop_player(self._active_output_player, context)
                 except Exception as err:
-                    raise QueuePlayerError(str(err)) from err
+                    raise QueuePlayerError(_safe_playback_error(err)) from err
                 self._active_output_player = ""
             self.media_player = target_player
             self._require_player()
@@ -315,10 +336,10 @@ class PlaybackQueue:
                 try:
                     await self._async_stop_player(output_player, context)
                 except Exception as err:
-                    self.last_error = str(err)
+                    self.last_error = _safe_playback_error(err)
                     self._changed()
                     await self._async_persist()
-                    raise QueuePlayerError(str(err)) from err
+                    raise QueuePlayerError(self.last_error) from err
                 self._active_output_player = ""
             return self.status()
 
@@ -339,10 +360,10 @@ class PlaybackQueue:
                     try:
                         await self._async_stop_player(player, context)
                     except Exception as err:
-                        self.last_error = str(err)
+                        self.last_error = _safe_playback_error(err)
                         self._changed()
                         await self._async_persist()
-                        raise QueuePlayerError(str(err)) from err
+                        raise QueuePlayerError(self.last_error) from err
                     self._active_output_player = ""
             self.items = []
             self.current_index = -1
@@ -439,7 +460,7 @@ class PlaybackQueue:
                     try:
                         await self._async_stop_player(old_player, None)
                     except Exception as err:
-                        raise QueuePlayerError(str(err)) from err
+                        raise QueuePlayerError(_safe_playback_error(err)) from err
                     self._active_output_player = ""
                 self._set_stopped()
                 self.media_player = entity_id
@@ -552,10 +573,10 @@ class PlaybackQueue:
             self.started_at = None
             self.ends_at = None
             self._loading_started_at = None
-            self.last_error = str(err)
+            self.last_error = _safe_playback_error(err)
             self._changed()
             await self._async_persist()
-            raise QueuePlayerError(str(err)) from err
+            raise QueuePlayerError(self.last_error) from err
         now = datetime.now(UTC)
         if new_share:
             self._share_id = share_id

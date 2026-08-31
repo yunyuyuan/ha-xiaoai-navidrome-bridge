@@ -65,7 +65,13 @@ from .const import (
 )
 from .embedder import HTTPEmbedder
 from .matcher import LibraryIndex
-from .model import NavidromeError, Playlist, Track
+from .model import (
+    NavidromeAuthError,
+    NavidromeConnectionError,
+    NavidromeError,
+    Playlist,
+    Track,
+)
 from .navidrome import NavidromeClient
 from .queue import PlaybackQueue, QueueError
 from .voice import VoiceCommand, parse_voice_command
@@ -79,6 +85,24 @@ VOICE_EVENT_TTL_SECONDS = 120
 
 class MatchError(HomeAssistantError):
     """Raised when a spoken request has no unambiguous match."""
+
+
+def _voice_error_category(err: Exception) -> str:
+    """Classify a voice failure without exposing exception text."""
+    current: BaseException | None = err
+    while current is not None:
+        if isinstance(current, MatchError):
+            return "matching"
+        if isinstance(current, NavidromeAuthError):
+            return "authentication"
+        if isinstance(current, NavidromeConnectionError):
+            return "connection"
+        if isinstance(current, NavidromeError):
+            return "protocol"
+        if isinstance(current, QueueError):
+            return "playback"
+        current = current.__cause__
+    return "home_assistant"
 
 
 class XiaoAINavidromeRuntime:
@@ -628,7 +652,10 @@ class XiaoAINavidromeRuntime:
             elif command.action == "stop":
                 await self.queue.async_stop()
         except (MatchError, NavidromeError, QueueError, HomeAssistantError) as err:
-            _LOGGER.warning("Unable to handle XiaoAI Navidrome voice command: %s", err)
+            _LOGGER.warning(
+                "Unable to handle XiaoAI Navidrome voice command (%s error)",
+                _voice_error_category(err),
+            )
 
     @callback
     def _async_player_changed(self, event: Event[Any]) -> None:

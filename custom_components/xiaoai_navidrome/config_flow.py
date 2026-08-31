@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import timedelta
@@ -78,6 +79,19 @@ from .navidrome import (
     NavidromeConnectionError,
     NavidromeError,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _log_validation_failure(stage: str, err: NavidromeError) -> None:
+    """Log a fixed setup stage and safe error category without upstream text."""
+    if isinstance(err, NavidromeAuthError):
+        category = "authentication"
+    elif isinstance(err, NavidromeConnectionError):
+        category = "connection"
+    else:
+        category = "protocol"
+    _LOGGER.warning("Navidrome setup validation failed at %s (%s error)", stage, category)
 
 
 def _normalize_url(value: str) -> str:
@@ -268,9 +282,21 @@ async def _validate_connection(hass: Any, values: Mapping[str, Any]) -> None:
         password=str(values[CONF_PASSWORD]),
         verify_ssl=bool(values[CONF_VERIFY_SSL]),
     )
-    await client.async_ping()
-    await client.async_login()
-    tracks = await client.async_search_tracks("", 1)
+    try:
+        await client.async_ping()
+    except NavidromeError as err:
+        _log_validation_failure("Subsonic ping", err)
+        raise
+    try:
+        await client.async_login()
+    except NavidromeError as err:
+        _log_validation_failure("native login", err)
+        raise
+    try:
+        tracks = await client.async_search_tracks("", 1)
+    except NavidromeError as err:
+        _log_validation_failure("library probe", err)
+        raise
     if tracks:
         share_id = ""
         try:
@@ -279,6 +305,9 @@ async def _validate_connection(hass: Any, values: Mapping[str, Any]) -> None:
                 max_bit_rate=DEFAULT_MAX_BIT_RATE,
                 ttl=timedelta(minutes=5),
             )
+        except NavidromeError as err:
+            _log_validation_failure("share probe", err)
+            raise
         finally:
             if share_id:
                 with suppress(NavidromeError):

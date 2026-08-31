@@ -76,6 +76,7 @@ class NavidromeClient:
             self._share_port,
             self._share_path,
         ) = self._validate_base_url(share_url or base_url)
+        self._share_url_explicit = share_url is not None
         self._username = username
         self._password = password
         self._session = session
@@ -182,16 +183,16 @@ class NavidromeClient:
                             return response.status, body
                         if auth_http_status and response.status == _HTTP_UNAUTHORIZED:
                             raise NavidromeAuthError(
-                                f"{method} {path} returned HTTP {response.status}"
+                                f"Navidrome authentication request returned HTTP {response.status}"
                             )
                         raise NavidromeProtocolError(
-                            f"{method} {path} returned HTTP {response.status}"
+                            f"Navidrome {method} request returned HTTP {response.status}"
                         )
                     return response.status, body
         except NavidromeError:
             raise
-        except (TimeoutError, aiohttp.ClientError, OSError) as err:
-            raise NavidromeConnectionError(f"{method} {path} failed: {err}") from err
+        except TimeoutError, aiohttp.ClientError, OSError:
+            raise NavidromeConnectionError(f"Navidrome {method} request failed") from None
 
     @staticmethod
     def _json_object(body: bytes, endpoint: str) -> Mapping[str, Any]:
@@ -223,12 +224,9 @@ class NavidromeClient:
         if root.get("status") != "ok":
             error = root.get("error")
             code = self._as_int(error.get("code")) if isinstance(error, Mapping) else None
-            message = self._as_text(error.get("message")) if isinstance(error, Mapping) else ""
             detail = (
                 f"Subsonic error {code}" if code is not None else "unsuccessful Subsonic status"
             )
-            if message:
-                detail = f"{detail}: {message}"
             if code in _AUTH_ERROR_CODES:
                 raise NavidromeAuthError(detail)
             raise NavidromeProtocolError(detail)
@@ -505,36 +503,105 @@ class NavidromeClient:
             raise NavidromeProtocolError(
                 f"share M3U has {len(entries)} URLs; expected {expected_count}"
             )
-        return [self._validate_share_url(entry) for entry in entries]
+        if self._share_url_explicit:
+            return [self._validate_share_url(entry) for entry in entries]
+
+        urls: list[str] = []
+        expected_root: tuple[str, str, int, str] | None = None
+        for entry in entries:
+            url, actual_root = self._validate_share_candidate(
+                entry,
+                resolve_base=self._base_url,
+                expected_root=expected_root,
+            )
+            expected_root = expected_root or actual_root
+            urls.append(url)
+        return urls
 
     def _validate_share_url(self, entry: str) -> str:
-        """Resolve a playlist URL and reject origins or paths outside its own share area."""
-        candidate = urljoin(f"{self._share_url}/", entry)
+        """Validate one URL against the explicitly configured public share base."""
+        url, _ = self._validate_share_candidate(
+            entry,
+            resolve_base=self._share_url,
+            expected_root=(
+                self._share_scheme,
+                self._share_host,
+                self._share_port,
+                self._share_path,
+            ),
+        )
+        return url
+
+    @staticmethod
+    def _validate_share_candidate(
+        entry: str,
+        *,
+        resolve_base: str,
+        expected_root: tuple[str, str, int, str] | None,
+    ) -> tuple[str, tuple[str, str, int, str]]:
+        """Validate one M3U URL and return its public share root."""
+        try:
+            raw_path = urlsplit(entry).path
+        except ValueError as err:
+            raise NavidromeProtocolError("share M3U contains an invalid URL") from err
+        NavidromeClient._decode_safe_share_path(raw_path)
+        candidate = urljoin(f"{resolve_base}/", entry)
         try:
             parts = urlsplit(candidate)
             port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
         except ValueError as err:
             raise NavidromeProtocolError("share M3U contains a URL with an invalid port") from err
         if (
-            parts.scheme.lower() != self._share_scheme
+            parts.scheme.lower() not in {"http", "https"}
             or not parts.hostname
-            or parts.hostname.lower() != self._share_host
-            or port != self._share_port
             or parts.query
             or parts.fragment
             or parts.username is not None
             or parts.password is not None
         ):
             raise NavidromeProtocolError("share M3U contains a URL outside the Navidrome origin")
-        prefix = f"{self._share_path}/share/s/" if self._share_path else "/share/s/"
-        # Check both the sent path and an unquoted normal form: encoded traversal
-        # must not turn an apparently valid URL into a request outside the share.
-        normalized = posixpath.normpath(unquote(parts.path))
-        if not parts.path.startswith(prefix) or not (normalized + "/").startswith(prefix):
+        marker = "/share/s/"
+        marker_at = parts.path.find(marker)
+        if marker_at < 0:
             raise NavidromeProtocolError(
                 "share M3U contains a URL outside the Navidrome share path"
             )
-        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        share_path = parts.path[:marker_at].rstrip("/")
+        actual_root = (parts.scheme.lower(), parts.hostname.lower(), port, share_path)
+        if expected_root is not None and actual_root != expected_root:
+            raise NavidromeProtocolError("share M3U contains a URL outside the Navidrome origin")
+        prefix = f"{share_path}{marker}" if share_path else marker
+        if not parts.path.startswith(prefix):
+            raise NavidromeProtocolError(
+                "share M3U contains a URL outside the Navidrome share path"
+            )
+        decoded_path = NavidromeClient._decode_safe_share_path(parts.path)
+        normalized = posixpath.normpath(decoded_path)
+        decoded_prefix = unquote(prefix)
+        if not (normalized + "/").startswith(decoded_prefix):
+            raise NavidromeProtocolError(
+                "share M3U contains a URL outside the Navidrome share path"
+            )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")), actual_root
+
+    @staticmethod
+    def _decode_safe_share_path(path: str) -> str:
+        """Decode one URL path while rejecting traversal at every encoding layer."""
+        decoded_path = path
+        for _ in range(8):
+            if (
+                "\\" in decoded_path
+                or any(not character.isprintable() for character in decoded_path)
+                or any(segment in {".", ".."} for segment in decoded_path.split("/"))
+            ):
+                raise NavidromeProtocolError(
+                    "share M3U contains a URL outside the Navidrome share path"
+                )
+            next_path = unquote(decoded_path)
+            if next_path == decoded_path:
+                return decoded_path
+            decoded_path = next_path
+        raise NavidromeProtocolError("share M3U contains an excessively encoded path")
 
     async def async_delete_share(self, share_id: str) -> None:
         """Delete a native share; failures are deliberately surfaced to the caller."""

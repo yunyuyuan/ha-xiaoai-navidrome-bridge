@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from custom_components.xiaoai_navidrome.config_flow import _validate_connection
 from custom_components.xiaoai_navidrome.const import DOMAIN
-from custom_components.xiaoai_navidrome.model import NavidromeAuthError
+from custom_components.xiaoai_navidrome.model import NavidromeAuthError, NavidromeProtocolError
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -68,6 +70,33 @@ async def test_user_flow_reports_invalid_credentials(hass: HomeAssistant) -> Non
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
     assert result["errors"] == {"base": "invalid_auth"}
+
+
+async def test_connection_validation_logs_the_failed_stage(hass: HomeAssistant) -> None:
+    """A setup protocol error identifies its stage without logging credentials."""
+    private_detail = "GET share/synthetic-private-capability/m3u returned HTTP 500"
+    failure = NavidromeProtocolError(private_detail)
+    with (
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_ping",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_login",
+            new=AsyncMock(side_effect=failure),
+        ),
+        patch("custom_components.xiaoai_navidrome.config_flow._LOGGER.warning") as warning,
+        pytest.raises(NavidromeProtocolError),
+    ):
+        await _validate_connection(hass, CONNECTION)
+
+    warning.assert_called_once_with(
+        "Navidrome setup validation failed at %s (%s error)",
+        "native login",
+        "protocol",
+    )
+    assert CONNECTION["password"] not in str(warning.call_args)
+    assert private_detail not in str(warning.call_args)
 
 
 async def test_options_can_clear_optional_values_and_api_key(hass: HomeAssistant) -> None:

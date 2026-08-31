@@ -37,9 +37,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEnt
     except NavidromeAuthError as err:
         raise ConfigEntryAuthFailed("Navidrome rejected the configured credentials") from err
     except NavidromeConnectionError as err:
-        raise ConfigEntryNotReady(f"Unable to connect to Navidrome: {err}") from err
+        raise ConfigEntryNotReady("Unable to connect to Navidrome") from err
     except NavidromeError as err:
-        raise ConfigEntryNotReady(f"Navidrome returned an invalid response: {err}") from err
+        raise ConfigEntryNotReady("Navidrome returned an invalid response") from err
 
     try:
         await async_register_panel(hass, entry.entry_id)

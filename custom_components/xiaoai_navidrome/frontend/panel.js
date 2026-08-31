@@ -64,6 +64,11 @@ export function coverApiPath(entryId, coverId) {
   return `/api/xiaoai_navidrome/cover/${encodeURIComponent(String(entryId))}/${encodeURIComponent(String(coverId))}`;
 }
 
+/** Compose a specialized cover class without dropping the shared crop rules. */
+export function coverClassNames(className = "") {
+  return ["cover", className, "cover-placeholder"].filter(Boolean).join(" ");
+}
+
 function abortable(promise, signal) {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
@@ -610,8 +615,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._render();
   }
 
-  _renderCover(coverId, label, className = "cover") {
-    const holder = makeElement("div", { className: `${className} cover-placeholder`, label: `${voiceSafeText(label, "音乐")}封面` }, [
+  _renderCover(coverId, label, className = "") {
+    const holder = makeElement("div", { className: coverClassNames(className), label: `${voiceSafeText(label, "音乐")}封面` }, [
       makeElement("span", { text: "♫" }),
     ]);
     const key = String(coverId || "");

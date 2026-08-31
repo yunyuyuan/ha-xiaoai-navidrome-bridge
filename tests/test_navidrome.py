@@ -222,12 +222,42 @@ def test_separate_public_share_origin_is_accepted() -> None:
     assert session.requests[-1]["url"] == "http://127.0.0.1:4533/share/share-synthetic/m3u"
 
 
+def test_private_api_infers_one_public_origin_from_m3u() -> None:
+    """A private API URL accepts one consistent public origin returned by Navidrome."""
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/auth/login"):
+            return _json_response({"token": "synthetic-token"})
+        if path.endswith("/api/share/"):
+            return _json_response({"id": "share-synthetic"})
+        return _Response(
+            200,
+            b"https://media.synthetic.invalid/music/share/s/one.mp3\n"
+            b"https://media.synthetic.invalid/music/share/s/two.mp3\n",
+        )
+
+    client, session = _client(responder, base_url="http://127.0.0.1:4533")
+    urls = asyncio.run(client.create_share(["track-one", "track-two"], timedelta(minutes=5), 128))
+    assert urls == [
+        "https://media.synthetic.invalid/music/share/s/one.mp3",
+        "https://media.synthetic.invalid/music/share/s/two.mp3",
+    ]
+    assert all(request["url"].startswith("http://127.0.0.1:4533/") for request in session.requests)
+
+
 @pytest.mark.parametrize(
     "entry",
     [
         "https://outside.synthetic/share/s/share-synthetic/file.mp3",
         "/library/share/s/share-synthetic/file.mp3?leak=1",
         "/library/share/s/%2e%2e/api/share/file.mp3",
+        "/library/share/s/a/../file.mp3",
+        "/library/share/s/a/%2e%2e/file.mp3",
+        "/library/share/s/%252e%252e/%252e%252e/private.mp3",
+        "/library/share/s/a%5c..%5c..%5cprivate.mp3",
+        "/library/share/s/a%00b/file.mp3",
+        "https://[::1/library/share/s/file.mp3",
         "https://user@synthetic.invalid/library/share/s/share-synthetic/file.mp3",
     ],
 )
@@ -242,9 +272,49 @@ def test_hostile_m3u_urls_are_rejected(entry: str) -> None:
             return _json_response({"data": {"id": "share-synthetic"}})
         return _Response(200, f"#EXTM3U\n{entry}\n".encode())
 
-    client, _ = _client(responder)
+    client, _ = _client(responder, share_url="https://synthetic.invalid/library")
     with pytest.raises(NavidromeProtocolError):
         asyncio.run(client.create_share(["track-one"], timedelta(minutes=5), 128))
+
+
+def test_inferred_share_origin_must_be_consistent() -> None:
+    """Automatic public-origin discovery cannot mix hosts within one M3U."""
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/auth/login"):
+            return _json_response({"token": "synthetic-token"})
+        if path.endswith("/api/share/"):
+            return _json_response({"id": "share-synthetic"})
+        return _Response(
+            200,
+            b"https://media-one.synthetic/music/share/s/one.mp3\n"
+            b"https://media-two.synthetic/music/share/s/two.mp3\n",
+        )
+
+    client, _ = _client(responder, base_url="http://127.0.0.1:4533")
+    with pytest.raises(NavidromeProtocolError, match="outside the Navidrome origin"):
+        asyncio.run(client.create_share(["track-one", "track-two"], timedelta(minutes=5), 128))
+
+
+def test_m3u_http_error_does_not_expose_share_identifier() -> None:
+    """The client error source itself cannot expose a temporary share identifier."""
+    private_id = "synthetic-private-share-capability"
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/auth/login"):
+            return _json_response({"token": "synthetic-token"})
+        if path.endswith("/api/share/"):
+            return _json_response({"id": private_id})
+        return _Response(500, b"synthetic failure")
+
+    client, _ = _client(responder, base_url="http://127.0.0.1:4533")
+    with pytest.raises(NavidromeProtocolError) as raised:
+        asyncio.run(client.create_share(["track-one"], timedelta(minutes=5), 128))
+
+    assert private_id not in str(raised.value)
+    assert str(raised.value) == "Navidrome GET request returned HTTP 500"
 
 
 def test_native_401_relogs_in_once() -> None:
