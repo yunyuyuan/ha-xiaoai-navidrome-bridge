@@ -40,7 +40,7 @@ Subsonic/OpenSubsonic API 使用 token 与 salt 鉴权，负责 ping、全曲库
 
 Navidrome v0.63.2 的公共路由提供 `/share/s/{id}` 音频处理和 `/{id}/m3u` 播放列表。[1] 媒体文件分享按请求中的 `ResourceIDs` 顺序加载曲目，并为每首曲目生成带签名的公开流 ID。[2] [3]
 
-队列首次播放或队列顺序变化时，集成为整组曲目创建一个分享并解析 M3U。API 地址与 `ND_SHAREURL` 不同时，Config Flow 可单独保存预期的公开 share base；M3U URL 必须与该 origin、有效端口和 base path 完全一致，位于 `/share/s/` 下，且不得包含查询参数、userinfo、fragment 或编码路径穿越。只要曲目 ID 顺序不变且分享剩余时间超过五分钟，上一首、下一首和跳转复用同一组 URL。活动 share 和待撤销 ID 都写入 private Store；替换队列、清空队列或关闭运行时时删除旧分享，临时失败则以一到六十分钟指数退避重试，并在重启后继续撤销。
+队列首次播放或队列顺序变化时，集成为整组曲目创建一个分享并解析 M3U。M3U 条目必须位于 `/share/s/` 下，且不得包含查询参数、userinfo、fragment、控制字符或编码路径穿越。Config Flow 未填写对外分享地址时，同一 M3U 的全部条目必须使用唯一一致的 origin；填写后，集成只保留经过上述校验的签名路径，并把它重写到用户信任的公网 scheme、host、port 和 base path。这样 Home Assistant 可以通过内网地址调用 API，而音箱始终使用独立公网入口。只要曲目 ID 顺序不变且分享剩余时间超过五分钟，上一首、下一首和跳转复用同一组 URL。活动 share 和待撤销 ID 都写入 private Store；替换队列、清空队列或关闭运行时时删除旧分享，临时失败则以一到六十分钟指数退避重试，并在重启后继续撤销。
 
 ## 曲库同步
 

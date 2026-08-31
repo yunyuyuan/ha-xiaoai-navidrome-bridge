@@ -91,12 +91,49 @@ async def test_connection_validation_logs_the_failed_stage(hass: HomeAssistant) 
         await _validate_connection(hass, CONNECTION)
 
     warning.assert_called_once_with(
-        "Navidrome setup validation failed at %s (%s error)",
+        "Navidrome setup validation failed at %s (%s error; reason=%s)",
         "native login",
+        "protocol",
         "protocol",
     )
     assert CONNECTION["password"] not in str(warning.call_args)
     assert private_detail not in str(warning.call_args)
+
+
+async def test_share_probe_log_includes_safe_protocol_reason(hass: HomeAssistant) -> None:
+    """Share validation identifies the failed rule without logging its URL."""
+    failure = NavidromeProtocolError(
+        "share M3U contains a URL outside the configured Navidrome origins",
+        reason="share_m3u_origin",
+    )
+    with (
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_ping",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_login",
+            new=AsyncMock(),
+        ),
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_search_tracks",
+            new=AsyncMock(return_value=["synthetic-track"]),
+        ),
+        patch(
+            "custom_components.xiaoai_navidrome.config_flow.NavidromeClient.async_create_stream_urls",
+            new=AsyncMock(side_effect=failure),
+        ),
+        patch("custom_components.xiaoai_navidrome.config_flow._LOGGER.warning") as warning,
+        pytest.raises(NavidromeProtocolError),
+    ):
+        await _validate_connection(hass, CONNECTION)
+
+    warning.assert_called_once_with(
+        "Navidrome setup validation failed at %s (%s error; reason=%s)",
+        "share probe",
+        "protocol",
+        "share_m3u_origin",
+    )
 
 
 async def test_options_can_clear_optional_values_and_api_key(hass: HomeAssistant) -> None:

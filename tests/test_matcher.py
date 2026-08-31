@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
+from custom_components.xiaoai_navidrome import matcher
 from custom_components.xiaoai_navidrome.matcher import LibraryIndex, Normalizer
 
 
@@ -30,6 +32,39 @@ class FailingStub(SemanticStub):
     async def embed_query(self, value: str) -> list[float]:
         """Model an unavailable embedding service during a search."""
         raise RuntimeError("unavailable")
+
+
+def test_normalizer_defers_dictionary_loading_until_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime construction performs no dictionary-backed converter file I/O."""
+    calls: list[str] = []
+
+    class Converter:
+        def __init__(self, mode: str) -> None:
+            calls.append(f"opencc:{mode}")
+
+        @staticmethod
+        def convert(value: str) -> str:
+            return value
+
+    class Kakasi:
+        def __init__(self) -> None:
+            calls.append("pykakasi")
+
+        @staticmethod
+        def convert(_value: str) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr(matcher, "opencc", SimpleNamespace(OpenCC=Converter))
+    monkeypatch.setattr(matcher, "pykakasi", SimpleNamespace(kakasi=Kakasi))
+
+    normalizer = Normalizer()
+    assert calls == []
+    normalizer.variants("Synthetic")
+    assert calls == ["opencc:s2t", "opencc:t2s", "pykakasi"]
+    normalizer.variants("Again")
+    assert calls == ["opencc:s2t", "opencc:t2s", "pykakasi"]
 
 
 @pytest.mark.asyncio

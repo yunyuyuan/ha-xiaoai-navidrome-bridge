@@ -50,7 +50,7 @@ Panel 通过 Home Assistant 已有登录会话调用集成 WebSocket 命令，�
 | 安装方式 | 已安装 HACS；也可手工复制 `custom_components/xiaoai_navidrome` |
 | Navidrome | **v0.63.2 或更高版本**，可从 Home Assistant 访问 |
 | Navidrome 分享 | `EnableSharing=true`；官方默认开启。反向代理必须允许 `/share/` [3] |
-| 分享公网地址 | 音箱必须能访问 Navidrome 生成的 share URL；内外地址不同时配置 `ND_SHAREURL`。集成可从 M3U 自动识别该公开地址，也可用“对外分享地址”显式固定 [4] |
+| 分享公网地址 | 音箱必须能访问公开的 `/share/` 路由；内外地址不同时，在“对外分享地址”填写音箱使用的 HTTPS 入口。集成会把 Navidrome M3U 中经过严格校验的 `/share/s/` 路径重写到该入口 [4] |
 | 播放实体 | 支持 `media_player.play_media`，并支持 `media_pause` 或 `media_stop` |
 | 语音实体 | 可选；由米家集成提供、状态值包含小爱识别文本的 conversation `sensor` |
 
@@ -85,7 +85,7 @@ https://github.com/yunyuyuan/ha-xiaoai-navidrome-bridge
 | Navidrome 连接 | API 服务地址、可选对外分享地址、用户名、密码、TLS 证书验证 |
 | 播放与匹配 | 默认小爱播放器、可选 conversation 传感器、语音前缀、队列参数和可选 Embedding |
 
-连接验证会检查 Subsonic 鉴权、Navidrome 原生登录，以及在非空曲库中创建并删除一次五分钟测试 share。任何一步失败都会在 Home Assistant 日志中标明 `Subsonic ping`、`native login`、`library probe` 或 `share probe`，但不会记录密码。配置完成后，集成在后台同步曲库；刷新期间当前索引仍可使用。
+连接验证会检查 Subsonic 鉴权、Navidrome 原生登录，以及在非空曲库中创建并删除一次五分钟测试 share。任何一步失败都会在 Home Assistant 日志中标明 `Subsonic ping`、`native login`、`library probe` 或 `share probe`；协议错误还会包含固定 `reason` 代码，但不会记录密码、share ID 或完整 URL。配置完成后，集成在后台同步曲库；刷新期间当前索引仍可使用。
 
 Navidrome 通过反向代理公开时，建议填写音箱也能访问的 HTTPS 地址，例如：
 
@@ -93,13 +93,13 @@ Navidrome 通过反向代理公开时，建议填写音箱也能访问的 HTTPS 
 https://music.example.com
 ```
 
-如果 Home Assistant 访问 Navidrome 的内部地址与音箱访问地址不同，请在 Navidrome 中设置：
+如果 Home Assistant 访问 Navidrome 的内部地址与音箱访问地址不同，可以同时在 Navidrome 中设置：
 
 ```text
 ND_SHAREURL=https://music.example.com
 ```
 
-Config Flow 第一页的 **Navidrome 对外分享地址** 可以留空：集成会从测试 share 的 M3U 中识别公开 origin，并要求同一 M3U 的全部条目使用同一 origin 和 `/share/s/` 路径。若希望固定允许的公开 origin，也可以在该字段填写与 `ND_SHAREURL` 相同的地址。集成始终通过内部 API 地址完成鉴权、曲库访问、share 创建和 M3U 获取，只把经过校验的公开音频地址发给音箱。确认反向代理放行 `/share/`。
+Config Flow 第一页的 **Navidrome 地址** 是 Home Assistant 调用 API 的地址，可以是 `127.0.0.1`、局域网 IP 或解析到内网 IP 的域名。**Navidrome 对外分享地址** 是音箱下载音频的目标入口；填写后，集成从 Navidrome M3U 取得并严格校验无查询参数的 `/share/s/` 签名路径，再把该路径重写到此公网入口。M3U 原本返回内网域名、另一个反向代理域名或相对路径均可。该字段留空时，集成才直接采用 M3U 中唯一一致的 origin。无论哪种方式，鉴权、曲库访问、share 创建和 M3U 获取始终走内部 API 地址。确认公网反向代理放行 `/share/`。
 
 ### 3. 首次检查
 

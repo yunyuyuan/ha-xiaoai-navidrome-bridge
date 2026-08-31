@@ -12,6 +12,7 @@ import asyncio
 import importlib
 import inspect
 import math
+import threading
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -74,22 +75,33 @@ class Normalizer:
     """
 
     def __init__(self) -> None:
-        """Initialise optional OpenCC and pykakasi converters defensively."""
+        """Create a lazy, thread-safe converter holder without file I/O."""
         self._s2t: Any | None = None
         self._t2s: Any | None = None
         self._kakasi: Any | None = None
-        if opencc is not None:
-            try:
-                self._s2t = opencc.OpenCC("s2t")
-                self._t2s = opencc.OpenCC("t2s")
-            except Exception:
-                self._s2t = None
-                self._t2s = None
-        if pykakasi is not None:
-            try:
-                self._kakasi = pykakasi.kakasi()
-            except Exception:
-                self._kakasi = None
+        self._initialized = False
+        self._initialize_lock = threading.Lock()
+
+    def _ensure_converters(self) -> None:
+        """Load optional dictionary-backed converters once in the caller's thread."""
+        if self._initialized:
+            return
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            if opencc is not None:
+                try:
+                    self._s2t = opencc.OpenCC("s2t")
+                    self._t2s = opencc.OpenCC("t2s")
+                except Exception:
+                    self._s2t = None
+                    self._t2s = None
+            if pykakasi is not None:
+                try:
+                    self._kakasi = pykakasi.kakasi()
+                except Exception:
+                    self._kakasi = None
+            self._initialized = True
 
     @staticmethod
     def key(value: str) -> str:
@@ -99,6 +111,7 @@ class Normalizer:
 
     def surface_variants(self, value: str) -> list[str]:
         """Return original, simplified, and traditional keys for substring use."""
+        self._ensure_converters()
         candidates = [str(value)]
         for converter in (self._s2t, self._t2s):
             if converter is None:
@@ -137,6 +150,7 @@ class Normalizer:
 
     def _japanese_variants(self, value: str) -> list[str]:
         """Return hiragana, katakana, and Hepburn forms supplied by pykakasi."""
+        self._ensure_converters()
         if self._kakasi is None:
             return []
         try:

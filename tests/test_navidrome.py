@@ -197,8 +197,8 @@ def test_native_login_create_and_m3u() -> None:
     ]
 
 
-def test_separate_public_share_origin_is_accepted() -> None:
-    """An explicit ShareURL permits private API access and a public speaker origin."""
+def test_private_m3u_origin_is_rewritten_to_public_share_origin() -> None:
+    """The API origin supplies a trusted path that is rewritten for the speaker."""
 
     def responder(**request: Any) -> _Response:
         path = urlsplit(request["url"]).path
@@ -208,7 +208,7 @@ def test_separate_public_share_origin_is_accepted() -> None:
             return _json_response({"id": "share-synthetic"})
         return _Response(
             200,
-            b"https://media.synthetic.invalid/music/share/s/signed-track.mp3\n",
+            b"http://127.0.0.1:4533/share/s/signed-track.mp3\n",
         )
 
     client, session = _client(
@@ -220,6 +220,29 @@ def test_separate_public_share_origin_is_accepted() -> None:
     assert urls == ["https://media.synthetic.invalid/music/share/s/signed-track.mp3"]
     assert session.requests[1]["url"] == "http://127.0.0.1:4533/api/share/"
     assert session.requests[-1]["url"] == "http://127.0.0.1:4533/share/share-synthetic/m3u"
+
+
+def test_m3u_public_origin_is_replaced_by_configured_speaker_origin() -> None:
+    """A valid share path from another proxy is emitted through the configured proxy."""
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/auth/login"):
+            return _json_response({"token": "synthetic-token"})
+        if path.endswith("/api/share/"):
+            return _json_response({"id": "share-synthetic"})
+        return _Response(
+            200,
+            b"https://internal-proxy.synthetic/share/s/signed-track.mp3\n",
+        )
+
+    client, _ = _client(
+        responder,
+        base_url="https://internal-proxy.synthetic",
+        share_url="https://speaker-proxy.synthetic",
+    )
+    urls = asyncio.run(client.create_share(["track-one"], timedelta(minutes=5), 128))
+    assert urls == ["https://speaker-proxy.synthetic/share/s/signed-track.mp3"]
 
 
 def test_private_api_infers_one_public_origin_from_m3u() -> None:
@@ -249,7 +272,6 @@ def test_private_api_infers_one_public_origin_from_m3u() -> None:
 @pytest.mark.parametrize(
     "entry",
     [
-        "https://outside.synthetic/share/s/share-synthetic/file.mp3",
         "/library/share/s/share-synthetic/file.mp3?leak=1",
         "/library/share/s/%2e%2e/api/share/file.mp3",
         "/library/share/s/a/../file.mp3",
@@ -257,6 +279,7 @@ def test_private_api_infers_one_public_origin_from_m3u() -> None:
         "/library/share/s/%252e%252e/%252e%252e/private.mp3",
         "/library/share/s/a%5c..%5c..%5cprivate.mp3",
         "/library/share/s/a%00b/file.mp3",
+        "/library/sha\tre/s/share-synthetic/file.mp3",
         "https://[::1/library/share/s/file.mp3",
         "https://user@synthetic.invalid/library/share/s/share-synthetic/file.mp3",
     ],
@@ -275,6 +298,23 @@ def test_hostile_m3u_urls_are_rejected(entry: str) -> None:
     client, _ = _client(responder, share_url="https://synthetic.invalid/library")
     with pytest.raises(NavidromeProtocolError):
         asyncio.run(client.create_share(["track-one"], timedelta(minutes=5), 128))
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "https://synthetic.invalid/library/sha\tre/s/signed-track.mp3",
+        "https://synthetic.invalid/library/sha\x00re/s/signed-track.mp3",
+    ],
+)
+def test_raw_control_characters_are_rejected_before_url_parsing(entry: str) -> None:
+    """URL parsing cannot erase raw control characters before validation."""
+
+    client, _ = _client(lambda **_: _json_response({}))
+    with pytest.raises(NavidromeProtocolError) as raised:
+        client._rewrite_share_url(entry)
+
+    assert raised.value.reason == "share_m3u_url"
 
 
 def test_inferred_share_origin_must_be_consistent() -> None:
@@ -356,8 +396,8 @@ def test_share_origin_normalizes_default_https_port() -> None:
 
     client, _ = _client(lambda **_: _json_response({}))
     assert (
-        client._validate_share_url("https://synthetic.invalid:443/library/share/s/signed-track.mp3")
-        == "https://synthetic.invalid:443/library/share/s/signed-track.mp3"
+        client._rewrite_share_url("https://synthetic.invalid:443/library/share/s/signed-track.mp3")
+        == "https://synthetic.invalid/library/share/s/signed-track.mp3"
     )
 
 

@@ -185,8 +185,14 @@ class NavidromeClient:
                             raise NavidromeAuthError(
                                 f"Navidrome authentication request returned HTTP {response.status}"
                             )
+                        reason = "http_status"
+                        if path.startswith("api/share"):
+                            reason = "share_api_http"
+                        elif path.startswith("share/") and path.endswith("/m3u"):
+                            reason = "share_m3u_http"
                         raise NavidromeProtocolError(
-                            f"Navidrome {method} request returned HTTP {response.status}"
+                            f"Navidrome {method} request returned HTTP {response.status}",
+                            reason=reason,
                         )
                     return response.status, body
         except NavidromeError:
@@ -474,7 +480,10 @@ class NavidromeClient:
         share = self._native_data(response, "api/share")
         share_id = self._as_text(share.get("id", share.get("shareId")))
         if not share_id:
-            raise NavidromeProtocolError("api/share response does not contain a share id")
+            raise NavidromeProtocolError(
+                "api/share response does not contain a share id",
+                reason="share_api_response",
+            )
         try:
             urls = await self._share_m3u(share_id, len(ids))
         except Exception:
@@ -493,7 +502,14 @@ class NavidromeClient:
         try:
             text = body.decode("utf-8-sig")
         except UnicodeDecodeError as err:
-            raise NavidromeProtocolError("share M3U is not UTF-8") from err
+            raise NavidromeProtocolError(
+                "share M3U is not UTF-8", reason="share_m3u_encoding"
+            ) from err
+        if any(not character.isprintable() and character not in "\r\n" for character in text):
+            raise NavidromeProtocolError(
+                "share M3U contains a URL with control characters",
+                reason="share_m3u_url",
+            )
         entries = [
             line.strip()
             for line in text.splitlines()
@@ -501,10 +517,11 @@ class NavidromeClient:
         ]
         if len(entries) != expected_count:
             raise NavidromeProtocolError(
-                f"share M3U has {len(entries)} URLs; expected {expected_count}"
+                f"share M3U has {len(entries)} URLs; expected {expected_count}",
+                reason="share_m3u_count",
             )
         if self._share_url_explicit:
-            return [self._validate_share_url(entry) for entry in entries]
+            return [self._rewrite_share_url(entry) for entry in entries]
 
         urls: list[str] = []
         expected_root: tuple[str, str, int, str] | None = None
@@ -518,19 +535,30 @@ class NavidromeClient:
             urls.append(url)
         return urls
 
-    def _validate_share_url(self, entry: str) -> str:
-        """Validate one URL against the explicitly configured public share base."""
+    def _rewrite_share_url(self, entry: str) -> str:
+        """Rewrite one trusted internal/public M3U path to the configured public base."""
         url, _ = self._validate_share_candidate(
             entry,
-            resolve_base=self._share_url,
-            expected_root=(
-                self._share_scheme,
-                self._share_host,
-                self._share_port,
-                self._share_path,
-            ),
+            resolve_base=self._base_url,
+            expected_root=None,
         )
-        return url
+        share_root = (
+            self._share_scheme,
+            self._share_host,
+            self._share_port,
+            self._share_path,
+        )
+        parts = urlsplit(url)
+        marker_at = parts.path.find("/share/s/")
+        public_path = f"{self._share_path}{parts.path[marker_at:]}"
+        public_base = urlsplit(self._share_url)
+        rewritten = urlunsplit((self._share_scheme, public_base.netloc, public_path, "", ""))
+        validated, _ = self._validate_share_candidate(
+            rewritten,
+            resolve_base=self._share_url,
+            expected_root=share_root,
+        )
+        return validated
 
     @staticmethod
     def _validate_share_candidate(
@@ -540,17 +568,27 @@ class NavidromeClient:
         expected_root: tuple[str, str, int, str] | None,
     ) -> tuple[str, tuple[str, str, int, str]]:
         """Validate one M3U URL and return its public share root."""
+        if any(not character.isprintable() for character in entry):
+            raise NavidromeProtocolError(
+                "share M3U contains a URL with control characters",
+                reason="share_m3u_url",
+            )
         try:
             raw_path = urlsplit(entry).path
         except ValueError as err:
-            raise NavidromeProtocolError("share M3U contains an invalid URL") from err
+            raise NavidromeProtocolError(
+                "share M3U contains an invalid URL", reason="share_m3u_url"
+            ) from err
         NavidromeClient._decode_safe_share_path(raw_path)
         candidate = urljoin(f"{resolve_base}/", entry)
         try:
             parts = urlsplit(candidate)
             port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
         except ValueError as err:
-            raise NavidromeProtocolError("share M3U contains a URL with an invalid port") from err
+            raise NavidromeProtocolError(
+                "share M3U contains a URL with an invalid port",
+                reason="share_m3u_url",
+            ) from err
         if (
             parts.scheme.lower() not in {"http", "https"}
             or not parts.hostname
@@ -559,28 +597,37 @@ class NavidromeClient:
             or parts.username is not None
             or parts.password is not None
         ):
-            raise NavidromeProtocolError("share M3U contains a URL outside the Navidrome origin")
+            raise NavidromeProtocolError(
+                "share M3U contains a URL outside the Navidrome origin",
+                reason="share_m3u_origin",
+            )
         marker = "/share/s/"
         marker_at = parts.path.find(marker)
         if marker_at < 0:
             raise NavidromeProtocolError(
-                "share M3U contains a URL outside the Navidrome share path"
+                "share M3U contains a URL outside the Navidrome share path",
+                reason="share_m3u_path",
             )
         share_path = parts.path[:marker_at].rstrip("/")
         actual_root = (parts.scheme.lower(), parts.hostname.lower(), port, share_path)
         if expected_root is not None and actual_root != expected_root:
-            raise NavidromeProtocolError("share M3U contains a URL outside the Navidrome origin")
+            raise NavidromeProtocolError(
+                "share M3U contains a URL outside the Navidrome origin",
+                reason="share_m3u_origin",
+            )
         prefix = f"{share_path}{marker}" if share_path else marker
         if not parts.path.startswith(prefix):
             raise NavidromeProtocolError(
-                "share M3U contains a URL outside the Navidrome share path"
+                "share M3U contains a URL outside the Navidrome share path",
+                reason="share_m3u_path",
             )
         decoded_path = NavidromeClient._decode_safe_share_path(parts.path)
         normalized = posixpath.normpath(decoded_path)
         decoded_prefix = unquote(prefix)
         if not (normalized + "/").startswith(decoded_prefix):
             raise NavidromeProtocolError(
-                "share M3U contains a URL outside the Navidrome share path"
+                "share M3U contains a URL outside the Navidrome share path",
+                reason="share_m3u_path",
             )
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")), actual_root
 
@@ -595,13 +642,17 @@ class NavidromeClient:
                 or any(segment in {".", ".."} for segment in decoded_path.split("/"))
             ):
                 raise NavidromeProtocolError(
-                    "share M3U contains a URL outside the Navidrome share path"
+                    "share M3U contains a URL outside the Navidrome share path",
+                    reason="share_m3u_path",
                 )
             next_path = unquote(decoded_path)
             if next_path == decoded_path:
                 return decoded_path
             decoded_path = next_path
-        raise NavidromeProtocolError("share M3U contains an excessively encoded path")
+        raise NavidromeProtocolError(
+            "share M3U contains an excessively encoded path",
+            reason="share_m3u_path",
+        )
 
     async def async_delete_share(self, share_id: str) -> None:
         """Delete a native share; failures are deliberately surfaced to the caller."""

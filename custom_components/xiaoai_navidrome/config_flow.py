@@ -78,6 +78,7 @@ from .navidrome import (
     NavidromeClient,
     NavidromeConnectionError,
     NavidromeError,
+    NavidromeProtocolError,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -91,7 +92,13 @@ def _log_validation_failure(stage: str, err: NavidromeError) -> None:
         category = "connection"
     else:
         category = "protocol"
-    _LOGGER.warning("Navidrome setup validation failed at %s (%s error)", stage, category)
+    reason = err.reason if isinstance(err, NavidromeProtocolError) else category
+    _LOGGER.warning(
+        "Navidrome setup validation failed at %s (%s error; reason=%s)",
+        stage,
+        category,
+        reason,
+    )
 
 
 def _normalize_url(value: str) -> str:

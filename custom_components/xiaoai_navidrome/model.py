@@ -21,6 +21,11 @@ class NavidromeConnectionError(NavidromeError):
 class NavidromeProtocolError(NavidromeError):
     """Raised when Navidrome returns an invalid or unsuccessful protocol response."""
 
+    def __init__(self, message: str, *, reason: str = "protocol") -> None:
+        """Store a fixed diagnostic reason separately from the safe message."""
+        super().__init__(message)
+        self.reason = reason
+
 
 @dataclass(frozen=True, slots=True)
 class Track:
