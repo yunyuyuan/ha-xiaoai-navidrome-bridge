@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -154,6 +155,8 @@ class XiaoAINavidromeRuntime:
         self._closing = False
         self._closed = False
         self._playlists_cache: tuple[float, list[Playlist]] = (0.0, [])
+        self._playlists_lock = asyncio.Lock()
+        self._playlist_listeners: set[Callable[[], None]] = set()
         self._processed_voice_events: set[str] = set()
 
     def _index_options(self) -> dict[str, Any]:
@@ -389,12 +392,38 @@ class XiaoAINavidromeRuntime:
 
     async def _async_playlists(self, *, fresh: bool = False) -> list[Playlist]:
         """Return a short-lived playlist cache."""
-        cached_at, playlists = self._playlists_cache
-        if not fresh and playlists and time.monotonic() - cached_at < PLAYLIST_CACHE_SECONDS:
+        observed_at = self._playlists_cache[0]
+        async with self._playlists_lock:
+            cached_at, cached_playlists = self._playlists_cache
+            if cached_at != observed_at:
+                return cached_playlists
+            if (
+                not fresh
+                and cached_playlists
+                and time.monotonic() - cached_at < PLAYLIST_CACHE_SECONDS
+            ):
+                return cached_playlists
+            playlists = await self.navidrome.async_playlists()
+            self._playlists_cache = (time.monotonic(), playlists)
+            if playlists != cached_playlists:
+                for listener in tuple(self._playlist_listeners):
+                    listener()
             return playlists
-        playlists = await self.navidrome.async_playlists()
-        self._playlists_cache = (time.monotonic(), playlists)
-        return playlists
+
+    async def async_playlists(self) -> list[Playlist]:
+        """Return playlist choices for Home Assistant entities."""
+        return await self._async_playlists()
+
+    @callback
+    def add_playlist_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to playlist choice changes without polling."""
+        self._playlist_listeners.add(listener)
+
+        @callback
+        def remove_listener() -> None:
+            self._playlist_listeners.discard(listener)
+
+        return remove_listener
 
     async def async_browse_playlists(self, query: str, offset: int, limit: int) -> dict[str, Any]:
         """Browse and lexically rank playlists."""

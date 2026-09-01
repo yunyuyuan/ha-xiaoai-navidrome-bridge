@@ -23,6 +23,7 @@ from custom_components.xiaoai_navidrome.voice import VoiceCommand
 from homeassistant.components.media_player.const import MediaPlayerEntityFeature
 from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
@@ -123,6 +124,12 @@ async def test_setup_service_voice_and_player_state_sync(
             new=AsyncMock(return_value=TRACKS),
         ),
         patch(
+            "custom_components.xiaoai_navidrome.navidrome.NavidromeClient.async_playlists",
+            new=AsyncMock(
+                return_value=[Playlist("playlist-one", "Synthetic Playlist", song_count=2)]
+            ),
+        ),
+        patch(
             "custom_components.xiaoai_navidrome.navidrome.NavidromeClient.async_create_stream_urls",
             new=AsyncMock(
                 side_effect=[
@@ -159,6 +166,17 @@ async def test_setup_service_voice_and_player_state_sync(
         assert runtime.index.autoplay_min_score == 0.91
         assert runtime.index.autoplay_min_margin == 0.19
         assert runtime.index.embedding_weight == 0.25
+        entity_registry = er.async_get(hass)
+        playlist_select_id = entity_registry.async_get_entity_id(
+            "select",
+            DOMAIN,
+            f"{entry.entry_id}_play_playlist",
+        )
+        assert playlist_select_id is not None
+        playlist_select = hass.states.get(playlist_select_id)
+        assert playlist_select is not None
+        assert playlist_select.state == "—"
+        assert playlist_select.attributes["options"] == ["—", "Synthetic Playlist"]
 
         websocket = await hass_ws_client(hass)
         await websocket.send_json_auto_id({"type": f"{DOMAIN}/config", "entry_id": entry.entry_id})
@@ -196,6 +214,24 @@ async def test_setup_service_voice_and_player_state_sync(
         assert media_calls[-1][1]["media_content_id"].startswith(
             "https://navidrome.invalid/share/s/"
         )
+
+        response = await hass.services.async_call(
+            DOMAIN,
+            "pause",
+            blocking=True,
+            return_response=True,
+        )
+        assert response["state"] == "stopped"
+        assert media_calls[-1][0] == "media_pause"
+        hass.states.async_set(PLAYER, "paused", {"supported_features": features})
+        response = await hass.services.async_call(
+            DOMAIN,
+            "resume",
+            blocking=True,
+            return_response=True,
+        )
+        assert response["state"] == "playing"
+        assert media_calls[-1][0] == "media_play"
 
         for payload, expected_call in (
             (
@@ -312,6 +348,16 @@ async def test_panel_registration_failure_closes_unpublished_runtime(
             "custom_components.xiaoai_navidrome.async_register_panel",
             new=AsyncMock(side_effect=RuntimeError("synthetic panel failure")),
         ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            new=AsyncMock(),
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_unload_platforms",
+            new=AsyncMock(return_value=True),
+        ),
         patch("custom_components.xiaoai_navidrome.async_unregister_panel"),
         pytest.raises(RuntimeError, match="synthetic panel failure"),
     ):
@@ -319,6 +365,43 @@ async def test_panel_registration_failure_closes_unpublished_runtime(
     runtime.async_setup.assert_awaited_once()
     runtime.async_close.assert_awaited_once()
     assert DOMAIN not in hass.data or entry.entry_id not in hass.data[DOMAIN]["entries"]
+
+
+async def test_select_platform_failure_closes_unpublished_runtime(
+    hass: HomeAssistant,
+) -> None:
+    """A failed entity platform forward rolls back the unpublished runtime."""
+    entry = MockConfigEntry(domain=DOMAIN, data=ENTRY_DATA, options=ENTRY_OPTIONS)
+    entry.add_to_hass(hass)
+    runtime = AsyncMock()
+    with (
+        patch(
+            "custom_components.xiaoai_navidrome.XiaoAINavidromeRuntime",
+            return_value=runtime,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            new=AsyncMock(side_effect=RuntimeError("synthetic platform failure")),
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_unload_platforms",
+            new=AsyncMock(return_value=True),
+        ) as unload_platforms,
+        patch(
+            "custom_components.xiaoai_navidrome.async_register_panel",
+            new=AsyncMock(),
+        ) as register_panel,
+        patch("custom_components.xiaoai_navidrome.async_unregister_panel"),
+        pytest.raises(RuntimeError, match="synthetic platform failure"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    unload_platforms.assert_awaited_once()
+    register_panel.assert_not_awaited()
+    runtime.async_close.assert_awaited_once()
+    assert entry.entry_id not in hass.data[DOMAIN]["entries"]
 
 
 async def test_playlist_start_occurrence_is_forwarded_to_shuffled_queue(

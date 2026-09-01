@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
@@ -24,6 +25,7 @@ from .websocket_api import async_register_websocket_commands
 
 XiaoAINavidromeConfigEntry = ConfigEntry[XiaoAINavidromeRuntime]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+PLATFORMS = [Platform.SELECT]
 
 
 async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
@@ -37,6 +39,7 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEntry) -> bool:
     """Set up one XiaoAI Navidrome config entry."""
+    hass.data.setdefault(DOMAIN, {}).setdefault("entries", {})
     runtime = XiaoAINavidromeRuntime(hass, entry)
     try:
         await runtime.async_setup()
@@ -47,7 +50,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEnt
     except NavidromeError as err:
         raise ConfigEntryNotReady("Navidrome returned an invalid response") from err
 
+    entry.runtime_data = runtime
+    hass.data[DOMAIN]["entries"][entry.entry_id] = runtime
     try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         if entry.options.get(CONF_PANEL_ENABLED, DEFAULT_PANEL_ENABLED):
             await async_register_panel(
                 hass,
@@ -55,17 +61,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEnt
                 entry.options.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
             )
     except Exception:
+        await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        hass.data[DOMAIN]["entries"].pop(entry.entry_id, None)
         await runtime.async_close()
         async_unregister_panel(hass)
         raise
-    entry.runtime_data = runtime
-    hass.data[DOMAIN]["entries"][entry.entry_id] = runtime
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEntry) -> bool:
     """Unload a config entry and cancel its background work."""
+    if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        return False
     runtime = hass.data[DOMAIN]["entries"].pop(entry.entry_id, None)
     if runtime is not None:
         await runtime.async_close()

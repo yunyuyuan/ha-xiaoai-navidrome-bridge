@@ -50,6 +50,14 @@ next:
         config_entry:
           integration: xiaoai_navidrome
 
+pause:
+  fields:
+    config_entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: xiaoai_navidrome
+
 resume:
   fields:
     config_entry_id:

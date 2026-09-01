@@ -121,9 +121,15 @@
     },
     "previous": {"name": "Previous track", "description": "Play the previous queue item."},
     "next": {"name": "Next track", "description": "Play the next queue item."},
+    "pause": {"name": "Pause", "description": "Pause playback and cancel automatic queue advancement."},
     "resume": {"name": "Resume", "description": "Resume the current item in the stopped queue."},
     "stop": {"name": "Stop", "description": "Stop playback and cancel automatic queue advancement."},
     "clear_queue": {"name": "Clear queue", "description": "Stop playback and remove every queue item."},
     "sync_library": {"name": "Sync library", "description": "Synchronize the local multilingual search index with Navidrome."}
+  },
+  "entity": {
+    "select": {
+      "play_playlist": {"name": "Quick play playlist"}
+    }
   }
 }

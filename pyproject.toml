@@ -1,6 +1,6 @@
 [project]
 name = "xiaoai-navidrome"
-version = "1.0.9"
+version = "1.0.10"
 description = "Home Assistant custom integration for playing Navidrome on XiaoAI speakers"
 requires-python = ">=3.14"
 license = "Apache-2.0"

@@ -19,11 +19,17 @@ Panel 的 JavaScript 和 CSS 由 Home Assistant 静态路径提供。浏览、�
 | 顶部状态 | 移动端 Home Assistant 侧栏菜单、集成名称、索引同步状态、日/夜/跟随系统主题 |
 | 播放器 | 旋转 CD、当前曲目、进度、上一首、播放/暂停、下一首、三态播放模式、音量和静音 |
 | 播放队列 | 输出播放器、可跳转的曲目队列和图标式清空操作 |
-| 曲库 | 本地索引分页、搜索；点击封面、标题或元数据区域可立即播放，右侧按钮提供下一首、加入队列和详情操作 |
-| 歌单 | Navidrome 歌单搜索；点击歌单封面进入曲目列表，点击歌单曲目的主体区域从该曲目开始播放完整歌单 |
+| 曲库 | 标签顺序为歌单、曲目，默认打开歌单；曲目支持本地索引分页和搜索，点击封面、标题或元数据区域可立即播放 |
+| 歌单 | Navidrome 歌单搜索；桌面端点击整张封面卡片、移动端点击无封面的紧凑列表行进入曲目列表，点击歌单曲目的主体区域从该曲目开始播放完整歌单 |
 | 详情 | 封面、标题、歌手、专辑、时长、格式、码率、年份等可用元数据 |
 
-在宽屏双栏布局中，曲库位于左侧、队列位于右侧；右侧队列面板使用 `position: sticky` 和 `top: 12px`，页面滚动时持续保留播放器控制。宽度不超过 `1050px` 的单栏布局以及 Home Assistant 标记的窄屏布局会显式恢复 `position: static`，并把队列移到曲库上方。窄屏标题左侧显示菜单按钮并派发原生 `hass-toggle-menu` 事件；kiosk 模式保持隐藏。[8] [9]
+在宽屏双栏布局中，曲库位于左侧、队列位于右侧；右侧队列面板使用 `position: sticky` 和 `top: 12px`，页面滚动时持续保留播放器控制。宽度不超过 `1050px` 的单栏布局以及 Home Assistant 标记的窄屏布局会显式恢复 `position: static`，并把队列移到曲库上方。移动端歌单使用单列文本行；首次窄屏渲染不创建歌单封面节点，从宽屏切换到窄屏时则原位重绘曲库并移除已有封面节点。窄屏标题左侧显示菜单按钮并派发原生 `hass-toggle-menu` 事件；kiosk 模式保持隐藏。[8] [9]
+
+## 首页仪表盘控制
+
+集成不注册额外 Lovelace 前端资源。首页的暂停、恢复、上一首和下一首可以用 Home Assistant 原生按钮卡片直接调用 `xiaoai_navidrome.pause`、`xiaoai_navidrome.resume`、`xiaoai_navidrome.previous` 和 `xiaoai_navidrome.next`。
+
+动态歌单入口使用标准 `SelectEntity`。实体的 `options` 来自运行时短时歌单缓存，普通属性读取只访问内存；首次添加实体及显式更新时才通过运行时刷新缓存，符合 Home Assistant 的实体规范。[10] 并发刷新由单飞锁合并，旧请求不能反向覆盖较新的名称映射。每个显示名称映射到精确歌单 ID；重复名称增加稳定序号，ID 不暴露为实体选项。选择后调用与 Panel 相同的 `async_add_playlist(..., "replace")`，因此共享同一持久队列、revision 和播放器。成功后实体回到空闲选项，以便重复播放同一歌单。带用户身份的调用要求管理员权限；无用户身份的 Home Assistant 内部自动化仍可执行。
 
 ## 队列语义
 
@@ -104,3 +110,4 @@ Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素�
 [7]: https://www.navidrome.org/docs/usage/library/artwork/ "Navidrome artwork resolution and image encoding"
 [8]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/layouts/home-assistant-main.ts "Home Assistant main layout sidebar event handling"
 [9]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/components/ha-menu-button.ts "Home Assistant menu button implementation"
+[10]: https://developers.home-assistant.io/docs/core/entity/select/ "Home Assistant Select entity"

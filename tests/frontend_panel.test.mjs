@@ -420,14 +420,16 @@ test("track primary targets select context-appropriate playback mutations", () =
   assert.equal(trackPrimaryCommand("library", ""), null);
 });
 
-test("panel exposes direct track and playlist-cover targets with segmented tabs", async () => {
+test("panel defaults to playlists and exposes compact mobile playlist rows", async () => {
   const source = await readFile(moduleUrl, "utf8");
   const css = await readFile(
     new URL("../custom_components/xiaoai_navidrome/frontend/panel.css", import.meta.url),
     "utf8",
   );
   assert.equal(source.includes('className: "track-primary"'), true);
-  assert.equal(source.includes('className: "playlist-cover-button"'), true);
+  assert.equal(source.includes('className: "playlist-card"'), true);
+  assert.equal(source.includes('this.libraryTab = "playlists"'), true);
+  assert.ok(source.indexOf('button("歌单"') < source.indexOf('button("曲目"'));
   assert.equal(source.includes('className: "menu-button icon-button"'), true);
   assert.equal(source.includes('makeElement("h1", { text: this.panelTitle })'), true);
   assert.equal(source.includes('new CustomEvent("hass-toggle-menu"'), true);
@@ -440,12 +442,28 @@ test("panel exposes direct track and playlist-cover targets with segmented tabs"
   assert.equal(source.includes('role: "tab"'), true);
   assert.match(css, /\.tab\[aria-selected="true"\]/);
   assert.match(css, /\.track-primary:hover/);
-  assert.match(css, /\.playlist-cover-button:hover/);
+  assert.match(css, /\.playlist-card:hover/);
+  assert.match(css, /:host\(\[narrow\]\) \.playlist-grid \{ grid-template-columns: 1fr;/);
+  assert.match(css, /:host\(\[narrow\]\) \.playlist-cover \{ display: none; \}/);
   assert.match(css, /:host\(\[narrow\]:not\(\[kiosk\]\)\) \.menu-button \{ display: grid/);
   assert.match(css, /\.menu-button \{[^}]+display: none/s);
   assert.match(css, /\.queue-pane \{[^}]*position: sticky;[^}]*top: 12px;/s);
   assert.match(css, /@media \(max-width: 1050px\) \{[\s\S]*?\.queue-pane \{ position: static; top: auto; \}/);
   assert.match(css, /:host\(\[narrow\]\) \.queue-pane \{ position: static; top: auto; \}/);
+});
+
+test("playlist-first tabs keep keyboard endpoints aligned with visual order", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let selected = "";
+  panel.libraryTab = "tracks";
+  panel._selectLibraryTab = (tab) => { selected = tab; };
+  const event = { key: "Home", preventDefault: () => undefined };
+
+  panel._handleLibraryTabKey(event);
+  assert.equal(selected, "playlists");
+  event.key = "End";
+  panel._handleLibraryTabKey(event);
+  assert.equal(selected, "tracks");
 });
 
 test("player uses a rotating disc, icon controls, ranges, and one mode button", async () => {
@@ -549,13 +567,13 @@ test("playlist navigation restores stable focus keys without retaining DOM nodes
   await panel._openPlaylist({ id: "playlist-one", name: "Synthetic Playlist" });
   await Promise.resolve();
   assert.equal(focused, "playlist-back");
-  assert.equal(panel._playlistReturnFocusKey, "playlist-cover:playlist-one");
+  assert.equal(panel._playlistReturnFocusKey, "playlist-card:playlist-one");
 
-  targets = [{ dataset: { focusKey: "playlist-cover:playlist-one" }, focus: () => { focused = "playlist-cover:playlist-one"; } }];
+  targets = [{ dataset: { focusKey: "playlist-card:playlist-one" }, focus: () => { focused = "playlist-card:playlist-one"; } }];
   panel._closePlaylist();
   await Promise.resolve();
   assert.equal(cancelled, true);
-  assert.equal(focused, "playlist-cover:playlist-one");
+  assert.equal(focused, "playlist-card:playlist-one");
   assert.equal(panel.selectedPlaylist, null);
 });
 
@@ -621,6 +639,7 @@ const densityAwareCovers = [64, 96, 256].every((size) => coverSizes.includes(siz
 const mainBefore = panel.shadowRoot.querySelector("main.panel");
 const libraryBefore = panel.shadowRoot.querySelector(".library-pane");
 const queueBefore = panel.shadowRoot.querySelector(".queue-pane");
+const desktopPlaylistCoverBefore = panel.shadowRoot.querySelector(".playlist-cover");
 const desktopSticky = getComputedStyle(queueBefore).position === "sticky"
   && getComputedStyle(queueBefore).top === "12px";
 const discCoverBefore = panel.shadowRoot.querySelector(".disc-cover");
@@ -675,6 +694,8 @@ panel.narrow = true;
 panel.shadowRoot.querySelector(".menu-button").click();
 const mobileMenuWorks = menuToggled && panel.hasAttribute("narrow");
 const narrowNotSticky = getComputedStyle(queueBefore).position === "static";
+const mobilePlaylistCompact = desktopPlaylistCoverBefore !== null
+  && panel.shadowRoot.querySelector(".playlist-cover") === null;
 panel.hass = { connection: {} };
 panel.panel = { config: { entry_id: "synthetic-entry", title: "Synthetic Music" } };
 const haPropertiesStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
@@ -702,7 +723,7 @@ mode.click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const playerControlPreserved = panel.shadowRoot.activeElement?.dataset.focusKey === "player-mode";
 const controlClickStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
-const cover = panel.shadowRoot.querySelector(".playlist-cover-button");
+const cover = panel.shadowRoot.querySelector(".playlist-card");
 cover.focus();
 cover.click();
 await new Promise((resolve) => setTimeout(resolve, 30));
@@ -712,8 +733,8 @@ await new Promise((resolve) => setTimeout(resolve, 30));
 const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" && playlistCommand?.start_index === 1;
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
-const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-cover:playlist-one";
-document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
+const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-card:playlist-one";
+document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && mobilePlaylistCompact && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};compact=\${mobilePlaylistCompact};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

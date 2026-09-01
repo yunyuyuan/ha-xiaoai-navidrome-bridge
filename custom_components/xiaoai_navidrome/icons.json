@@ -4,9 +4,15 @@
     "play_playlist": {"service": "mdi:playlist-play"},
     "previous": {"service": "mdi:skip-previous"},
     "next": {"service": "mdi:skip-next"},
+    "pause": {"service": "mdi:pause"},
     "resume": {"service": "mdi:play"},
     "stop": {"service": "mdi:stop-circle"},
     "clear_queue": {"service": "mdi:playlist-remove"},
     "sync_library": {"service": "mdi:sync"}
+  },
+  "entity": {
+    "select": {
+      "play_playlist": {"default": "mdi:playlist-play"}
+    }
   }
 }

@@ -71,6 +71,11 @@ async def test_hidden_panel_does_not_block_runtime_setup(hass: HomeAssistant) ->
             "custom_components.xiaoai_navidrome.async_register_panel",
             new=AsyncMock(),
         ) as register,
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            new=AsyncMock(),
+        ),
     ):
         assert await async_setup_entry(hass, entry)
 
@@ -107,6 +112,11 @@ async def test_visible_panel_uses_the_configured_title(hass: HomeAssistant) -> N
             "custom_components.xiaoai_navidrome.async_register_panel",
             new=AsyncMock(),
         ) as register,
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            new=AsyncMock(),
+        ),
     ):
         assert await async_setup_entry(hass, entry)
 
