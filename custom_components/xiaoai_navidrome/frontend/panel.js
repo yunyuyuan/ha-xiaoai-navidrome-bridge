@@ -519,6 +519,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._detailGate = new RequestGate();
     this._unsubscribeQueue = null;
     this._commandChain = Promise.resolve();
+    this._connectionController = new AbortController();
     this._queueEpoch = 0;
     this._queueReceivedAt = Date.now();
     this._progressTimer = null;
@@ -527,6 +528,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._volumeConfirmTimer = null;
     this._initializedEntry = "";
     this._initializing = false;
+    this._initializationSerial = 0;
+    this._initializationPromise = null;
     this._covers = new CoverStore(this);
     this._render();
   }
@@ -548,6 +551,38 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     if (nextEntry !== this.entryId) {
       this.entryId = nextEntry;
       this._initializedEntry = "";
+      this._initGate.cancel();
+      this._tracksGate.cancel();
+      this._playlistsGate.cancel();
+      this._playlistTracksGate.cancel();
+      this._detailGate.cancel();
+      this._initializationSerial += 1;
+      this._initializing = false;
+      this._initializationPromise = null;
+      this._connectionController.abort();
+      this._connectionController = new AbortController();
+      this._commandChain = Promise.resolve();
+      this.queue = { items: [], current_index: -1, revision: 0, state: "stopped", repeat: "all", shuffle: false };
+      this._queueEpoch += 1;
+      this._queueReceivedAt = Date.now();
+      this._seekPreview = null;
+      if (this._progressTimer) clearInterval(this._progressTimer);
+      this._progressTimer = null;
+      this.config = {};
+      this.players = [];
+      this.tracks = [];
+      this.trackTotal = 0;
+      this.trackOffset = 0;
+      this.playlists = [];
+      this.playlistTotal = 0;
+      this.playlistOffset = 0;
+      this.selectedPlaylist = null;
+      this.playlistTracks = [];
+      this.playlistTrackTotal = 0;
+      this.playlistTrackOffset = 0;
+      this._playlistReturnFocusKey = "";
+      this.detail = null;
+      this.notice = "";
       if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
       this._volumeConfirmTimer = null;
       this._pendingVolume = null;
@@ -584,6 +619,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   connectedCallback() {
     this._connected = true;
+    if (this._connectionController.signal.aborted) {
+      this._connectionController = new AbortController();
+    }
     if (this._covers.closed) this._covers = new CoverStore(this);
     this._loadStyles();
     this._start();
@@ -592,6 +630,11 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   disconnectedCallback() {
     this._connected = false;
     this._initializedEntry = "";
+    this._initializationSerial += 1;
+    this._initializing = false;
+    this._initializationPromise = null;
+    this._connectionController.abort();
+    this._commandChain = Promise.resolve();
     this._initGate.cancel();
     this._tracksGate.cancel();
     this._playlistsGate.cancel();
@@ -642,53 +685,67 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   _start() {
-    if (!this._connected) return;
+    if (!this._connected) return Promise.resolve(false);
     if (!this.hass) {
       this.connectionState = "等待 Home Assistant";
       this._render();
-      return;
+      return Promise.resolve(false);
     }
     if (!this.entryId) {
       this.connectionState = "面板配置缺少 entry_id";
       this._render();
-      return;
+      return Promise.resolve(false);
     }
-    if (this._initializing || this._initializedEntry === this.entryId) return;
-    this._initialize();
+    if (this._initializedEntry === this.entryId) return Promise.resolve(true);
+    if (this._initializing && this._initializationPromise) return this._initializationPromise;
+    const serial = ++this._initializationSerial;
+    const promise = this._initialize(serial, this.entryId);
+    this._initializationPromise = promise;
+    return promise;
   }
 
-  async _initialize() {
+  async _initialize(serial, initializingEntry) {
     this._initializing = true;
     const gate = this._initGate.begin();
     this.connectionState = "正在连接";
     this._render();
     this._subscribeQueue();
     try {
-      const [config, players] = await Promise.all([
+      const queueEpoch = this._queueEpoch;
+      const [config, players, queueResponse] = await Promise.all([
         this._call("config", {}, gate.signal),
         this._call("media_players", {}, gate.signal),
+        this._call("queue", {}, gate.signal),
       ]);
-      if (!gate.isCurrent() || !this._connected) return;
+      if (!gate.isCurrent() || !this._connected || initializingEntry !== this.entryId) return false;
       this.config = config || {};
       this.players = responseItems(players);
+      const queue = queueStatus(queueResponse);
+      if (queue?.items && queueEpoch === this._queueEpoch) this._applyQueue(queue);
       this.connectionState = this.config.connected === false ? "Navidrome 未连接" : "已连接";
       this.syncing = Boolean(this.config.index?.syncing);
       this._initializedEntry = this.entryId;
       this._render();
-      await Promise.all([this._refreshQueue(), this._loadTracks(), this._loadPlaylists()]);
+      void Promise.allSettled([this._loadTracks(), this._loadPlaylists()]);
+      return true;
     } catch (error) {
       if (!isAbort(error) && gate.isCurrent()) {
         this.connectionState = "连接不可用";
         this._setNotice("无法连接集成，请检查配置。", true);
       }
+      return false;
     } finally {
-      this._initializing = false;
+      if (serial === this._initializationSerial) {
+        this._initializing = false;
+        this._initializationPromise = null;
+      }
     }
   }
 
   async _subscribeQueue() {
     if (this._unsubscribeQueue || !this.hass?.connection || !this.entryId) return;
     const subscribedEntry = this.entryId;
+    const connectionSignal = this._connectionController.signal;
     try {
       const unsubscribe = await this.hass.connection.subscribeMessage(
         (event) => {
@@ -698,21 +755,33 @@ class XiaoAINavidromePanel extends HTMLElementBase {
         { type: `${WS_PREFIX}subscribe_queue`, entry_id: subscribedEntry },
       );
       if (typeof unsubscribe === "function") {
-        if (this._connected && subscribedEntry === this.entryId && !this._unsubscribeQueue) {
+        if (
+          this._connected
+          && !connectionSignal.aborted
+          && subscribedEntry === this.entryId
+          && !this._unsubscribeQueue
+        ) {
           this._unsubscribeQueue = unsubscribe;
         } else {
           unsubscribe();
         }
       }
     } catch (_) {
-      if (this._connected && subscribedEntry === this.entryId) this._setNotice("队列实时更新暂不可用。", true);
+      if (this._connected && !connectionSignal.aborted && subscribedEntry === this.entryId) {
+        this._setNotice("队列实时更新暂不可用。", true);
+      }
     }
   }
 
   _call(command, fields = {}, signal) {
     if (!this.hass?.callWS) return Promise.reject(new Error("Home Assistant WebSocket unavailable"));
+    const requestSignal = signal || this._connectionController.signal;
+    if (requestSignal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
     const message = { type: `${WS_PREFIX}${command}`, entry_id: this.entryId, ...fields };
-    return abortable(Promise.resolve(this.hass.callWS(message)), signal);
+    return abortable(
+      Promise.resolve(this.hass.callWS(message)),
+      requestSignal,
+    );
   }
 
   async _refreshQueue() {
@@ -862,16 +931,33 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   _queueCommand(command, fields = {}) {
+    const commandEntry = this.entryId;
+    const commandSignal = this._connectionController.signal;
     this._commandChain = this._commandChain
       .catch(() => undefined)
       .then(async () => {
+        if (commandSignal.aborted || commandEntry !== this.entryId) return null;
+        const ready = this._initializedEntry === this.entryId || await this._start();
+        if (
+          !ready
+          || commandSignal.aborted
+          || !this._connected
+          || commandEntry !== this.entryId
+          || this._initializedEntry !== commandEntry
+        ) return null;
         const expectedRevision = Number(this.queue.revision);
         try {
-          const result = await this._call(command, { ...fields, expected_revision: expectedRevision });
+          const result = await this._call(
+            command,
+            { ...fields, expected_revision: expectedRevision },
+            commandSignal,
+          );
+          if (commandSignal.aborted || commandEntry !== this.entryId) return null;
           const status = queueStatus(result);
           if (status?.items) this._applyQueue(status);
           return result;
         } catch (error) {
+          if (isAbort(error) || commandSignal.aborted || commandEntry !== this.entryId) return null;
           if (isConflict(error)) {
             this._setNotice("队列已在其他位置更新，已刷新最新状态。", true);
             await this._refreshQueue();
@@ -1428,6 +1514,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   async _syncLibrary() {
     if (this.syncing) return;
+    const ready = this._initializedEntry === this.entryId || await this._start();
+    if (!ready || !this._connected || this._initializedEntry !== this.entryId) return;
     this.syncing = true;
     this._render();
     try {
@@ -1435,8 +1523,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       this.config = { ...this.config, index };
       this._setNotice("曲库同步已完成。");
       await Promise.all([this._loadTracks(), this._loadPlaylists()]);
-    } catch (_) {
-      this._setNotice("无法启动曲库同步。", true);
+    } catch (error) {
+      if (!isAbort(error)) this._setNotice("无法启动曲库同步。", true);
     } finally {
       this.syncing = false;
       this._render();

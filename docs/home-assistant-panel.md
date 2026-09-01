@@ -55,13 +55,13 @@ Panel 只列出同时支持以下能力的 `media_player`：
 
 ## 状态与并发
 
-Panel 首次载入时读取队列快照，随后订阅实时队列事件。所选播放器的状态、音量和进度属性也由 Home Assistant `state_changed` 事件推送到相同订阅，不轮询播放器。播放期间，Panel 只在浏览器内根据最近的 HA 位置时间戳平滑显示秒数；拖动进度后仍由 Home Assistant 实体执行实际跳转。拖动会话中的进度预览持续到 `change`、失焦或当前曲目改变，不会被同曲目的状态事件和秒级显示计时器覆盖。音量命令在等待实体状态事件确认期间保留目标值，避免旧属性造成滑杆回弹。[3] [4]
+Panel 首次载入或从其他页面返回时，并行读取配置、播放器能力和队列快照，随后订阅实时队列事件；这些数据都来自 Home Assistant 内存，不等待 Navidrome 曲库或歌单请求。曲库和歌单在播放器控制就绪后继续后台刷新。所选播放器的状态、音量和进度属性也由 Home Assistant `state_changed` 事件推送到相同订阅，不轮询播放器。播放期间，Panel 只在浏览器内根据最近的 HA 位置时间戳平滑显示秒数；拖动进度后仍由 Home Assistant 实体执行实际跳转。拖动会话中的进度预览持续到 `change`、失焦或当前曲目改变，不会被同曲目的状态事件和秒级显示计时器覆盖。音量命令在等待实体状态事件确认期间保留目标值，避免旧属性造成滑杆回弹。[3] [4]
 
 Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素转发变化的属性，不会重新创建元素。[1] [5] Panel 的全部渲染路径都在现有 DOM 上逐项同步属性、文本、事件处理器和控件状态；队列事件、通知、主题和数据刷新不会替换根树、队列容器、CD、按钮、滑杆或封面标识相同的图片节点。Home Assistant 重复设置相同的 `narrow`、`hass` 或 Panel 配置时同样保持现有 Shadow DOM 节点。
 
 每个变更命令携带当前 `expected_revision`。单曲和歌单语音任务在开始匹配前记录 revision，并在最终替换队列时校验；匹配期间只要暂停、清空、切换队列、自动推进或另一个页面已经修改队列，服务端就拒绝迟到结果。Panel 的过期命令同样会获取最新状态，而不是覆盖较新的操作。
 
-客户端还会串行发送命令并忽略 revision 倒退的过期响应，避免快速点击造成响应乱序。关闭 Panel 不会终止后端队列或自动切歌。
+客户端还会串行发送命令并忽略 revision 倒退的过期响应，避免快速点击造成响应乱序。Panel 被 Home Assistant 移出页面时会同步使当前初始化代次失效、取消未完成的前端请求等待并释放命令链；重新挂载会立即启动新初始化。重连过程中发生的操作会等待当前配置、播放器能力和队列快照就绪后再发送。关闭 Panel 不会终止后端队列或自动切歌。[5]
 
 ## 封面与详情
 
@@ -95,7 +95,7 @@ Home Assistant 外层 Panel 在普通状态变化时只向既有自定义元素�
 [2]: https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/ "Home Assistant frontend hass object and WebSocket API"
 [3]: https://developers.home-assistant.io/docs/core/entity/media-player/ "Home Assistant media player entity features"
 [4]: https://developers.home-assistant.io/docs/integration_listen_events/ "Home Assistant event subscriptions"
-[5]: https://github.com/home-assistant/frontend/blob/e09c4084b71b53d12858c3051559855fe0ce366c/src/panels/custom/ha-panel-custom.ts "Home Assistant custom panel container source"
+[5]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/panels/custom/ha-panel-custom.ts "Home Assistant custom panel container source"
 [6]: https://opensubsonic.netlify.app/docs/endpoints/getcoverart/ "OpenSubsonic getCoverArt endpoint"
 [7]: https://www.navidrome.org/docs/usage/library/artwork/ "Navidrome artwork resolution and image encoding"
 [8]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/layouts/home-assistant-main.ts "Home Assistant main layout sidebar event handling"

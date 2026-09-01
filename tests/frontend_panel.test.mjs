@@ -148,6 +148,259 @@ test("RequestGate invalidates and aborts obsolete responses", () => {
   assert.equal(second.isCurrent(), false);
 });
 
+test("disconnect during initialization starts a fresh connection immediately", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let attempt = 0;
+  let queueApplied = 0;
+  let libraryLoads = 0;
+  let releaseLibrary;
+  const libraryPending = new Promise((resolve) => { releaseLibrary = resolve; });
+  const gates = ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate"];
+  Object.assign(panel, {
+    _connected: true,
+    _hass: {},
+    entryId: "entry-one",
+    _initializedEntry: "",
+    _initializing: false,
+    _initializationSerial: 0,
+    _initializationPromise: null,
+    _connectionController: new AbortController(),
+    _unsubscribeQueue: null,
+    _progressTimer: null,
+    _volumeConfirmTimer: null,
+    _pendingVolume: null,
+    _queueEpoch: 0,
+    _covers: { closed: false, clear() { this.closed = true; } },
+    queue: { items: [], revision: 0 },
+    config: {},
+    players: [],
+    connectionState: "正在连接",
+    syncing: false,
+    _render: () => undefined,
+    _loadStyles: () => undefined,
+    _subscribeQueue: () => undefined,
+    _applyQueue: () => { queueApplied += 1; },
+    _loadTracks: () => { libraryLoads += 1; return libraryPending; },
+    _loadPlaylists: () => { libraryLoads += 1; return libraryPending; },
+  });
+  for (const key of gates) panel[key] = new RequestGate();
+  panel._call = (command, _fields, signal) => {
+    if (command === "config") attempt += 1;
+    const currentAttempt = attempt;
+    if (currentAttempt === 1) {
+      return new Promise((resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    }
+    if (command === "config") return Promise.resolve({ connected: true, index: {} });
+    if (command === "media_players") return Promise.resolve({ items: [] });
+    return Promise.resolve({ items: [], revision: 2 });
+  };
+
+  const abandoned = panel._start();
+  assert.equal(panel._initializing, true);
+  panel.disconnectedCallback();
+  panel.connectedCallback();
+  const reconnected = panel._initializationPromise;
+
+  assert.equal(await abandoned, false);
+  assert.equal(
+    await Promise.race([
+      reconnected,
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]),
+    true,
+  );
+  assert.equal(attempt, 2);
+  assert.equal(panel._initializedEntry, "entry-one");
+  assert.equal(panel._initializing, false);
+  assert.equal(queueApplied, 1);
+  assert.equal(libraryLoads, 2);
+  releaseLibrary();
+});
+
+test("an abandoned command releases the chain and a reconnect click waits for readiness", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let notices = 0;
+  let commandCalls = 0;
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _commandChain: Promise.resolve(),
+    queue: { items: [], revision: 4 },
+    _hass: { callWS: () => new Promise(() => undefined) },
+    _setNotice: () => { notices += 1; },
+    _applyQueue: () => undefined,
+  });
+
+  const abandoned = panel._queueCommand("queue_control", { action: "next" });
+  await Promise.resolve();
+  panel._connectionController.abort();
+  assert.equal(await abandoned, null);
+  assert.equal(notices, 0);
+
+  panel._connectionController = new AbortController();
+  panel._initializedEntry = "";
+  panel._start = () => ready;
+  panel._hass = {
+    callWS: async () => {
+      commandCalls += 1;
+      return { items: [], revision: 5 };
+    },
+  };
+  const afterReconnect = panel._queueCommand("queue_control", { action: "next" });
+  await Promise.resolve();
+  assert.equal(commandCalls, 0);
+  panel._initializedEntry = "entry-one";
+  resolveReady(true);
+  assert.notEqual(await afterReconnect, null);
+  assert.equal(commandCalls, 1);
+  assert.equal(notices, 0);
+});
+
+test("a queued command from the detached generation is never sent after reconnect", async () => {
+  let releaseChain;
+  let commandCalls = 0;
+  const blockedChain = new Promise((resolve) => { releaseChain = resolve; });
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _commandChain: blockedChain,
+    queue: { items: [], revision: 4 },
+    _hass: {
+      callWS: async () => {
+        commandCalls += 1;
+        return { items: [], revision: 5 };
+      },
+    },
+    _setNotice: () => undefined,
+    _applyQueue: () => undefined,
+  });
+
+  const oldController = panel._connectionController;
+  const queued = panel._queueCommand("queue_control", { action: "next" });
+  oldController.abort();
+  panel._connectionController = new AbortController();
+  panel._initializedEntry = "";
+  panel._start = async () => {
+    panel._initializedEntry = "entry-one";
+    return true;
+  };
+  releaseChain();
+
+  assert.equal(await queued, null);
+  assert.equal(commandCalls, 0);
+});
+
+test("a late subscription from the detached connection cannot replace the current one", async () => {
+  const pending = [];
+  let staleUnsubscribed = 0;
+  let currentUnsubscribed = 0;
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _unsubscribeQueue: null,
+    _connectionController: new AbortController(),
+    _hass: {
+      connection: {
+        subscribeMessage: () => new Promise((resolve) => pending.push(resolve)),
+      },
+    },
+    _setNotice: () => { throw new Error("an abandoned subscription must stay silent"); },
+  });
+
+  const first = panel._subscribeQueue();
+  panel._connectionController.abort();
+  panel._connectionController = new AbortController();
+  const second = panel._subscribeQueue();
+  pending[0](() => { staleUnsubscribed += 1; });
+  await first;
+  assert.equal(staleUnsubscribed, 1);
+  assert.equal(panel._unsubscribeQueue, null);
+
+  const currentUnsubscribe = () => { currentUnsubscribed += 1; };
+  pending[1](currentUnsubscribe);
+  await second;
+  assert.equal(panel._unsubscribeQueue, currentUnsubscribe);
+  panel._unsubscribeQueue();
+  assert.equal(currentUnsubscribed, 1);
+});
+
+test("switching entries rejects a late command response and resets queue revision", async () => {
+  let resolveCommand;
+  let oldUnsubscribed = 0;
+  const commandResponse = new Promise((resolve) => { resolveCommand = resolve; });
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    _connected: true,
+    _panel: { config: { entry_id: "entry-a" } },
+    entryId: "entry-a",
+    _initializedEntry: "entry-a",
+    _initializing: false,
+    _initializationSerial: 1,
+    _initializationPromise: null,
+    _connectionController: new AbortController(),
+    _commandChain: Promise.resolve(),
+    _queueEpoch: 3,
+    _queueReceivedAt: Date.now(),
+    _seekPreview: null,
+    _progressTimer: null,
+    _volumeConfirmTimer: null,
+    _pendingVolume: null,
+    _unsubscribeQueue: () => { oldUnsubscribed += 1; },
+    _covers: { clear: () => undefined },
+    queue: { items: [{ id: "track-a" }], current_index: 0, revision: 99, state: "playing" },
+    config: { connected: true },
+    players: [{ entity_id: "media_player.a" }],
+    tracks: [{ id: "track-a" }],
+    trackTotal: 1,
+    trackOffset: 0,
+    playlists: [],
+    playlistTotal: 0,
+    playlistOffset: 0,
+    selectedPlaylist: null,
+    playlistTracks: [],
+    playlistTrackTotal: 0,
+    playlistTrackOffset: 0,
+    _playlistReturnFocusKey: "",
+    detail: null,
+    notice: "",
+    _hass: { callWS: () => commandResponse },
+    _setNotice: () => undefined,
+    _renderQueueOnly: () => undefined,
+    _syncProgressTimer: () => undefined,
+    _start: () => Promise.resolve(true),
+  });
+  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate"]) {
+    panel[key] = new RequestGate();
+  }
+
+  const oldCommand = panel._queueCommand("queue_control", { action: "next" });
+  await Promise.resolve();
+  panel.panel = { config: { entry_id: "entry-b" } };
+  resolveCommand({ items: [{ id: "track-a" }], current_index: 0, revision: 100 });
+
+  assert.equal(await oldCommand, null);
+  assert.equal(oldUnsubscribed, 1);
+  assert.equal(panel.entryId, "entry-b");
+  assert.equal(panel.queue.revision, 0);
+  assert.deepEqual(panel.queue.items, []);
+  assert.deepEqual(panel.tracks, []);
+  assert.deepEqual(panel.players, []);
+});
+
 test("track primary targets select context-appropriate playback mutations", () => {
   assert.deepEqual(trackPrimaryCommand("library", "track-one"), {
     command: "queue_add",
