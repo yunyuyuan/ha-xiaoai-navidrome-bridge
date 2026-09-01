@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from homeassistant.components import frontend, panel_custom
@@ -9,6 +10,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    DEFAULT_PANEL_TITLE,
     DOMAIN,
     PANEL_ELEMENT,
     PANEL_STATIC_URL,
@@ -19,8 +21,20 @@ from .const import (
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
-async def async_register_panel(hass: HomeAssistant, entry_id: str) -> None:
+def normalize_panel_title(value: object) -> str:
+    """Return a compact sidebar title without control or directional characters."""
+    if value is None:
+        return DEFAULT_PANEL_TITLE
+    clean = "".join(
+        " " if unicodedata.category(character).startswith("C") else character
+        for character in str(value)
+    )
+    return " ".join(clean.split())[:40] or DEFAULT_PANEL_TITLE
+
+
+async def async_register_panel(hass: HomeAssistant, entry_id: str, title: object) -> None:
     """Serve and register the XiaoAI Navidrome panel."""
+    sidebar_title = normalize_panel_title(title)
     domain_data = hass.data.setdefault(DOMAIN, {})
     if not domain_data.get("static_registered"):
         await hass.http.async_register_static_paths(
@@ -38,10 +52,10 @@ async def async_register_panel(hass: HomeAssistant, entry_id: str) -> None:
         hass,
         frontend_url_path=PANEL_URL_PATH,
         webcomponent_name=PANEL_ELEMENT,
-        sidebar_title="小爱音乐",
+        sidebar_title=sidebar_title,
         sidebar_icon="mdi:music-circle",
         module_url=f"{PANEL_STATIC_URL}/panel.js?v={VERSION}",
-        config={"entry_id": entry_id},
+        config={"entry_id": entry_id, "title": sidebar_title},
         require_admin=True,
         handle_safe_area=True,
     )

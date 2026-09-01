@@ -8,7 +8,13 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN
+from .const import (
+    CONF_PANEL_ENABLED,
+    CONF_PANEL_TITLE,
+    DEFAULT_PANEL_ENABLED,
+    DEFAULT_PANEL_TITLE,
+    DOMAIN,
+)
 from .http import async_register_http_views
 from .model import NavidromeAuthError, NavidromeConnectionError, NavidromeError
 from .panel import async_register_panel, async_unregister_panel
@@ -42,7 +48,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEnt
         raise ConfigEntryNotReady("Navidrome returned an invalid response") from err
 
     try:
-        await async_register_panel(hass, entry.entry_id)
+        if entry.options.get(CONF_PANEL_ENABLED, DEFAULT_PANEL_ENABLED):
+            await async_register_panel(
+                hass,
+                entry.entry_id,
+                entry.options.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
+            )
     except Exception:
         await runtime.async_close()
         async_unregister_panel(hass)

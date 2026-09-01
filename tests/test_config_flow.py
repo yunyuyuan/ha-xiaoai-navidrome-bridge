@@ -20,6 +20,8 @@ CONNECTION = {
     "verify_ssl": True,
 }
 PLAYBACK = {
+    "panel_enabled": True,
+    "panel_title": "小爱音乐",
     "media_player": "media_player.synthetic_speaker",
     "track_phrase": "播放家庭音乐",
     "playlist_phrase": "播放家庭歌单",
@@ -54,6 +56,8 @@ async def test_user_flow_configures_connection_and_playback(hass: HomeAssistant)
     assert result["title"] == "XiaoAI Navidrome"
     assert result["data"]["navidrome_url"] == "https://navidrome.invalid/music"
     assert result["options"]["media_player"] == "media_player.synthetic_speaker"
+    assert result["options"]["panel_enabled"] is True
+    assert result["options"]["panel_title"] == "小爱音乐"
     assert "media_player" not in result["data"]
     assert "home_assistant_token" not in result["data"]
 
@@ -164,6 +168,31 @@ async def test_options_can_clear_optional_values_and_api_key(hass: HomeAssistant
     assert "embedding_url" not in result["data"]
     assert "embedding_api_key" not in result["data"]
     assert "clear_embedding_api_key" not in result["data"]
+
+
+async def test_options_can_rename_and_hide_the_sidebar_panel(hass: HomeAssistant) -> None:
+    """Sidebar presentation is managed by the integration options."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**CONNECTION, "navidrome_url": "https://navidrome.invalid/music"},
+        options=PLAYBACK,
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **PLAYBACK,
+            "panel_enabled": False,
+            "panel_title": "  Synthetic\u202e   Music  ",
+        },
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["panel_enabled"] is False
+    assert result["data"]["panel_title"] == "Synthetic Music"
 
 
 async def test_reconfigure_can_remove_public_share_url(hass: HomeAssistant) -> None:

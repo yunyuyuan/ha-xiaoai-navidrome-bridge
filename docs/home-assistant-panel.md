@@ -1,12 +1,16 @@
 # Home Assistant 原生播放面板
 
-“小爱音乐”页面由自定义集成直接注册到 Home Assistant 侧栏。它不是 iframe，也不依赖外部页面、独立令牌或 Home Assistant 长期访问令牌。
+侧栏播放页面由自定义集成直接注册到 Home Assistant。它不是 iframe，也不依赖外部页面、独立令牌或 Home Assistant 长期访问令牌。
 
 ## 运行方式
 
 Panel 的 JavaScript 和 CSS 由 Home Assistant 静态路径提供。浏览、搜索、歌单、队列和控制命令通过 Home Assistant WebSocket API 发送到同一 Config Entry。Home Assistant 自定义 Panel 可以获得标准 `hass` 前端对象，集成 WebSocket 命令则继承当前登录用户身份。[1] [2]
 
 所有 Panel WebSocket 命令和封面 HTTP 代理均要求管理员权限。侧栏条目也以 `require_admin=true` 注册，因此普通用户不会看到或调用该控制界面。
+
+## 侧栏管理
+
+该页面是集成注册的原生 `panel_custom`，不是 Lovelace 仪表盘，因此不出现在 Home Assistant 的“仪表盘”管理页。管理员可进入 **设置 → 设备与服务 → XiaoAI Navidrome → 配置**，修改 **侧栏和页面名称**，或关闭 **显示侧栏面板**。名称会同时用于侧栏条目和页面标题。关闭开关只注销侧栏入口；集成运行时、语音口令、服务动作、持久队列和自动切歌保持运行。重新打开开关会在配置重载后恢复入口。
 
 ## 页面组成
 
@@ -19,7 +23,7 @@ Panel 的 JavaScript 和 CSS 由 Home Assistant 静态路径提供。浏览、�
 | 歌单 | Navidrome 歌单搜索；点击歌单封面进入曲目列表，点击歌单曲目的主体区域从该曲目开始播放完整歌单 |
 | 详情 | 封面、标题、歌手、专辑、时长、格式、码率、年份等可用元数据 |
 
-在宽屏布局中，曲库位于左侧、队列位于右侧。单栏和移动端布局会把队列移到曲库上方，保证播放控制优先可见。Home Assistant 把 Panel 标记为窄屏时，标题左侧显示菜单按钮并派发原生 `hass-toggle-menu` 事件；kiosk 模式保持隐藏。[8] [9]
+在宽屏双栏布局中，曲库位于左侧、队列位于右侧；右侧队列面板使用 `position: sticky` 和 `top: 12px`，页面滚动时持续保留播放器控制。宽度不超过 `1050px` 的单栏布局以及 Home Assistant 标记的窄屏布局会显式恢复 `position: static`，并把队列移到曲库上方。窄屏标题左侧显示菜单按钮并派发原生 `hass-toggle-menu` 事件；kiosk 模式保持隐藏。[8] [9]
 
 ## 队列语义
 

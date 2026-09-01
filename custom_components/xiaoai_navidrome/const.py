@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "xiaoai_navidrome"
 NAME: Final = "XiaoAI Navidrome"
-VERSION: Final = "1.0.8"
+VERSION: Final = "1.0.9"
 
 CONF_NAVIDROME_URL: Final = "navidrome_url"
 CONF_SHARE_URL: Final = "share_url"
@@ -22,6 +22,8 @@ CONF_SHARE_TTL_HOURS: Final = "share_ttl_hours"
 CONF_QUEUE_MAX_TRACKS: Final = "queue_max_tracks"
 CONF_PLAYLIST_GAP_SECONDS: Final = "playlist_gap_seconds"
 CONF_INDEX_REFRESH_MINUTES: Final = "index_refresh_minutes"
+CONF_PANEL_ENABLED: Final = "panel_enabled"
+CONF_PANEL_TITLE: Final = "panel_title"
 CONF_EMBEDDING_ENABLED: Final = "embedding_enabled"
 CONF_EMBEDDING_URL: Final = "embedding_url"
 CONF_EMBEDDING_PROVIDER: Final = "embedding_provider"
@@ -42,6 +44,8 @@ DEFAULT_SHARE_TTL_HOURS: Final = 6
 DEFAULT_QUEUE_MAX_TRACKS: Final = 500
 DEFAULT_PLAYLIST_GAP_SECONDS: Final = 2
 DEFAULT_INDEX_REFRESH_MINUTES: Final = 30
+DEFAULT_PANEL_ENABLED: Final = True
+DEFAULT_PANEL_TITLE: Final = "小爱音乐"
 DEFAULT_EMBEDDING_ENABLED: Final = False
 DEFAULT_EMBEDDING_PROVIDER: Final = "ollama"
 DEFAULT_EMBEDDING_MODEL: Final = "qwen3-embedding:0.6b"

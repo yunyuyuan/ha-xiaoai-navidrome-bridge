@@ -490,6 +490,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._narrow = false;
     this._connected = false;
     this.entryId = "";
+    this.panelTitle = "小爱音乐";
     this.queue = { items: [], current_index: -1, revision: 0, state: "stopped", repeat: "all", shuffle: false };
     this.config = {};
     this.players = [];
@@ -548,6 +549,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._panel = value;
     const config = value?.config || value || {};
     const nextEntry = String(config.entry_id || "");
+    const nextTitle = voiceSafeText(config.title, "小爱音乐");
+    const titleChanged = nextTitle !== this.panelTitle;
+    this.panelTitle = nextTitle;
     if (nextEntry !== this.entryId) {
       this.entryId = nextEntry;
       this._initializedEntry = "";
@@ -591,7 +595,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       if (this._unsubscribeQueue) this._unsubscribeQueue();
       this._unsubscribeQueue = null;
       if (this._connected) this._start();
-    }
+    } else if (titleChanged && this._connected) this._render();
   }
 
   get panel() {
@@ -1078,7 +1082,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       }),
       makeElement("div", { className: "brand-mark", text: "♫" }),
       makeElement("div", {}, [
-        makeElement("h1", { text: "XiaoAI Navidrome" }),
+        makeElement("h1", { text: this.panelTitle }),
         makeElement("p", { className: "connection", text: `${this.connectionState}${this.syncing ? " · 正在同步" : ""}` }),
       ]),
     ]);

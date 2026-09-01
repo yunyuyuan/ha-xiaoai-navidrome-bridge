@@ -151,7 +151,7 @@ h2 { font-size: 17px; }
 }
 .library-pane, .queue-pane { border: 1px solid var(--x-border); border-radius: 18px; background: var(--x-surface); box-shadow: var(--x-shadow); }
 .library-pane { grid-area: library; min-width: 0; overflow: hidden; }
-.queue-pane { grid-area: queue; align-self: start; min-width: 0; padding: 17px; }
+.queue-pane { position: sticky; top: 12px; grid-area: queue; align-self: start; min-width: 0; padding: 17px; }
 .tabs {
   display: inline-grid;
   grid-auto-flow: column;
@@ -344,6 +344,7 @@ h2 { font-size: 17px; }
 @media (max-width: 1050px) {
   .header { grid-template-columns: 1fr auto; }
   .layout { grid-template-columns: 1fr; grid-template-areas: "queue" "library"; }
+  .queue-pane { position: static; top: auto; }
   .queue-list { max-height: 320px; }
 }
 
@@ -352,6 +353,7 @@ h2 { font-size: 17px; }
 :host([narrow]:not([kiosk])) .menu-button { display: grid; place-items: center; }
 :host([narrow]) .header-actions { justify-content: flex-start; }
 :host([narrow]) .layout { grid-template-columns: 1fr; grid-template-areas: "queue" "library"; gap: 13px; }
+:host([narrow]) .queue-pane { position: static; top: auto; }
 :host([narrow]) .track-row { grid-template-columns: 1fr; }
 :host([narrow]) .track-primary { grid-template-columns: 40px minmax(0, 1fr); }
 :host([narrow]) .track-primary .duration { display: none; }

@@ -43,6 +43,8 @@ from .const import (
     CONF_MAX_BIT_RATE,
     CONF_MEDIA_PLAYER,
     CONF_NAVIDROME_URL,
+    CONF_PANEL_ENABLED,
+    CONF_PANEL_TITLE,
     CONF_PASSWORD,
     CONF_PLAYLIST_GAP_SECONDS,
     CONF_PLAYLIST_PHRASE,
@@ -62,6 +64,8 @@ from .const import (
     DEFAULT_EMBEDDING_WEIGHT,
     DEFAULT_INDEX_REFRESH_MINUTES,
     DEFAULT_MAX_BIT_RATE,
+    DEFAULT_PANEL_ENABLED,
+    DEFAULT_PANEL_TITLE,
     DEFAULT_PLAYLIST_GAP_SECONDS,
     DEFAULT_PLAYLIST_PHRASE,
     DEFAULT_QUEUE_MAX_TRACKS,
@@ -80,6 +84,7 @@ from .navidrome import (
     NavidromeError,
     NavidromeProtocolError,
 )
+from .panel import normalize_panel_title
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -149,6 +154,14 @@ def _connection_schema(defaults: Mapping[str, Any] | None = None) -> vol.Schema:
 
 def _options_schema(defaults: Mapping[str, Any], *, allow_key_clear: bool = False) -> vol.Schema:
     fields: dict[Any, Any] = {
+        vol.Required(
+            CONF_PANEL_ENABLED,
+            default=defaults.get(CONF_PANEL_ENABLED, DEFAULT_PANEL_ENABLED),
+        ): BooleanSelector(),
+        vol.Required(
+            CONF_PANEL_TITLE,
+            default=defaults.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
+        ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
         vol.Required(
             CONF_MEDIA_PLAYER, default=defaults.get(CONF_MEDIA_PLAYER, "")
         ): EntitySelector(EntitySelectorConfig(domain="media_player")),
@@ -371,6 +384,8 @@ class XiaoAINavidromeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_user()
         if user_input is not None:
             values = dict(user_input)
+            values[CONF_PANEL_ENABLED] = bool(values[CONF_PANEL_ENABLED])
+            values[CONF_PANEL_TITLE] = normalize_panel_title(values[CONF_PANEL_TITLE])
             values.pop(CONF_CLEAR_EMBEDDING_API_KEY, None)
             for optional in (
                 CONF_CONVERSATION_SENSOR,
@@ -475,6 +490,8 @@ class XiaoAINavidromeOptionsFlow(config_entries.OptionsFlow):
         """Manage integration options."""
         if user_input is not None:
             values = dict(user_input)
+            values[CONF_PANEL_ENABLED] = bool(values[CONF_PANEL_ENABLED])
+            values[CONF_PANEL_TITLE] = normalize_panel_title(values[CONF_PANEL_TITLE])
             clear_api_key = bool(values.pop(CONF_CLEAR_EMBEDDING_API_KEY, False))
             if clear_api_key:
                 values.pop(CONF_EMBEDDING_API_KEY, None)
