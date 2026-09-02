@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "xiaoai_navidrome"
 NAME: Final = "XiaoAI Navidrome"
-VERSION: Final = "1.0.10"
+VERSION: Final = "1.0.11"
 
 CONF_NAVIDROME_URL: Final = "navidrome_url"
 CONF_SHARE_URL: Final = "share_url"

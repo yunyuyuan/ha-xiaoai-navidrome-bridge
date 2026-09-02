@@ -17,7 +17,7 @@ from .model import NavidromeError, Playlist
 if TYPE_CHECKING:
     from .runtime import XiaoAINavidromeRuntime
 
-_IDLE_OPTION = "—"
+_IDLE_OPTION = "播放歌单"
 _MAX_OPTION_LENGTH = 96
 
 

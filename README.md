@@ -167,7 +167,7 @@ Panel 默认打开歌单页，“歌单”标签位于“曲目”之前；支�
 
 ### 首页仪表盘简要控制
 
-不需要安装额外前端卡片。可以在首页仪表盘用 Home Assistant 原生 **按钮卡片**分别调用 `xiaoai_navidrome.previous`、`xiaoai_navidrome.pause`、`xiaoai_navidrome.resume` 和 `xiaoai_navidrome.next`。集成同时提供名为 **快速播放歌单** 的 `select` 实体；把它加入实体卡片后，选择任一 Navidrome 歌单会按精确歌单 ID 替换共享队列并立即播放，成功后选择器回到空闲状态，因此同一歌单也可以再次选择。歌单名称重复时会自动增加序号以保持每个选项可单独选择，后端 ID 不会显示在仪表盘中。
+不需要安装额外前端卡片。可以在首页仪表盘用 Home Assistant 原生 **按钮卡片**分别调用 `xiaoai_navidrome.previous`、`xiaoai_navidrome.pause`、`xiaoai_navidrome.resume` 和 `xiaoai_navidrome.next`。集成同时提供名为 **快速播放歌单** 的 `select` 实体；把它加入实体卡片后，选择任一 Navidrome 歌单会按精确歌单 ID 替换共享队列并立即播放，成功后选择器回到“播放歌单”提示项，因此同一歌单也可以再次选择。歌单名称重复时会自动增加序号以保持每个选项可单独选择，后端 ID 不会显示在仪表盘中。
 
 该选择实体在集成载入时读取歌单，并在侧栏刷新歌单列表后同步更新选项；它不轮询播放器。仪表盘用户触发播放时仍遵守集成的管理员权限边界，Home Assistant 内部自动化可正常调用。
 

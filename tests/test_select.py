@@ -33,7 +33,7 @@ def test_playlist_options_are_sorted_unique_and_hide_ids() -> None:
     )
 
     assert options == [
-        "—",
+        "播放歌单",
         "L" * 96,
         "Synthetic Mix",
         "Synthetic Mix (2)",
@@ -48,6 +48,14 @@ def test_playlist_options_are_sorted_unique_and_hide_ids() -> None:
         "Visible Label": "playlist-d",
     }
     assert all("playlist-" not in option for option in options)
+
+
+def test_playlist_name_does_not_collide_with_idle_prompt() -> None:
+    """A playlist matching the prompt remains independently selectable."""
+    options, playlist_ids = _playlist_options([Playlist("playlist-one", "播放歌单")])
+
+    assert options == ["播放歌单", "播放歌单 (2)"]
+    assert playlist_ids == {"播放歌单 (2)": "playlist-one"}
 
 
 async def test_runtime_notifies_playlist_entities_only_when_choices_change() -> None:
@@ -135,7 +143,7 @@ async def test_playlist_select_plays_exact_choice_and_requires_admin(
         expected_revision=7,
         context=entity._context,
     )
-    assert entity.current_option == "—"
+    assert entity.current_option == "播放歌单"
     entity.async_write_ha_state.assert_called_once()
 
     regular = await hass.auth.async_create_user("synthetic-regular")
