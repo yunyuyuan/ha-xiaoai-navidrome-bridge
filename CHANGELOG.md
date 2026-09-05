@@ -1,134 +1,142 @@
 # Changelog
 
-所有重要变更均记录在此文件。版本标签遵循语义化版本。
+All significant changes are documented in this file. Version tags follow Semantic Versioning.
+
+## [1.0.13] - 2026-09-06
+
+### Changed
+
+- Public documentation is now English-first, including the README, architecture, Panel guide, local-model guide, release process, and changelog.
+- Home Assistant remains fully localized through English and Simplified Chinese translation files. The quick-play playlist prompt now uses a translated SelectEntity state instead of a hard-coded display language.
+- HACS validation now runs without disabled checks in both mainline CI and the release workflow; the HACS manifest declares the integration's `CN` country scope.
 
 ## [1.0.12] - 2026-09-05
 
 ### Added
 
-- Panel 新增英语和简体中文界面，安装配置默认英语；语言只能在集成配置页选择，主页和 Panel 内不增加切换控件。
+- The Panel now provides English and Simplified Chinese interfaces; installation and configuration default to English. The language can be selected only on the integration configuration page; no switch is added to the Home page or within the Panel.
 
 ### Fixed
 
-- 封面 Blob 缓存提升到当前 Home Assistant 前端模块生命周期；离开并返回 Panel 时复用同一有界缓存，不再重新下载已命中的同尺寸封面，页面真正卸载时统一释放对象 URL。
+- The cover-art Blob cache now lasts for the current Home Assistant frontend module lifecycle. Leaving and returning to the Panel reuses the same bounded cache instead of redownloading cache-hit covers at the same size; object URLs are released together when the page is actually unloaded.
 
 ## [1.0.11] - 2026-09-02
 
 ### Changed
 
-- 快速播放歌单选择实体的首项与播放完成后的空闲项由破折号改为“播放歌单”；同名歌单仍可通过自动编号独立选择。
+- The first option and the post-playback idle option of the quick-play playlist selector entity now use a clear **Play playlist** prompt rather than a dash. Playlists with identical names remain independently selectable through automatic numbering.
 
 ## [1.0.10] - 2026-09-02
 
 ### Added
 
-- 新增 `xiaoai_navidrome.pause` 原生动作，以及可直接加入 Home Assistant 首页仪表盘的“快速播放歌单”选择实体；选择歌单后会用精确歌单替换共享队列并立即播放，并发歌单刷新会合并为单次请求。
+- Added the native `xiaoai_navidrome.pause` action and a quick-play playlist selector entity that can be added directly to the Home Assistant dashboard. Selecting a playlist replaces the shared queue with that exact playlist and starts playback immediately; concurrent playlist refreshes are coalesced into a single request.
 
 ### Changed
 
-- 侧栏曲库默认打开歌单页，并把“歌单”标签移到“曲目”之前。
-- 移动端歌单改为不创建封面元素的单列紧凑列表，整行均可点击进入歌单详情；从宽屏切换到窄屏时会原位移除已有歌单封面。
+- The sidebar library now opens on the playlists page by default, and the **Playlists** tab precedes the **Tracks** tab.
+- On mobile, playlists use a compact single-column list without cover elements; the full row opens playlist details. Existing playlist covers are removed in place when switching from a wide to a narrow screen.
 
 ## [1.0.9] - 2026-09-01
 
 ### Added
 
-- 集成配置新增侧栏面板显示开关和名称；名称同步用于 Home Assistant 侧栏与 Panel 页面标题，隐藏入口不影响语音和后台队列。
+- Integration configuration now includes a sidebar Panel visibility toggle and name. The name is used for both the Home Assistant sidebar and the Panel page title; hiding the entry does not affect voice control or the background queue.
 
 ### Changed
 
-- 桌面双栏布局中的队列面板使用 `position: sticky` 并保留 `12px` 顶部间距；单栏和窄屏布局保持普通文档流。
+- The queue panel in the desktop two-column layout uses `position: sticky` with a `12px` top offset. Single-column and narrow-screen layouts retain normal document flow.
 
 ## [1.0.8] - 2026-09-01
 
 ### Fixed
 
-- 离开 Panel 时同步释放当前初始化代次，返回页面后立即建立新的队列订阅和本地状态快照，不再等待下一次 Home Assistant 状态推送。
-- 断开时取消未完成的前端命令等待并释放串行命令链；重连期间的操作会等待当前连接就绪后执行，不再先显示失败。
-- 曲库和歌单数据刷新改为后台加载，不再延迟队列与播放器控制就绪。
+- Leaving the Panel now releases the current initialization generation in sync. Returning to the page immediately establishes a new queue subscription and local state snapshot rather than waiting for the next Home Assistant state update.
+- On disconnect, pending frontend command waits are cancelled and the serialized command chain is released. Operations during reconnection wait until the current connection is ready instead of first being shown as failures.
+- Library and playlist data now refresh in the background and no longer delay queue and player-control readiness.
 
 ## [1.0.7] - 2026-08-31
 
 ### Fixed
 
-- 曲目、队列、播放器、详情和歌单封面按场景与设备像素密度选择 64 至 384 px 的 Navidrome 缩略图；密度按 1.5 倍封顶，不再统一下载 600 px 图片。
-- 移动端标题左侧增加 Home Assistant 侧栏菜单按钮，并遵循 Home Assistant 的窄屏和 kiosk 显示规则。
-- conversation 传感器重复刷新最近一条识别记录时不再重新执行点歌；无稳定事件字段时改用 Home Assistant 的状态变更时间作为事件身份。
-- 单曲和歌单语音匹配绑定触发时的队列 revision；匹配期间发生暂停、清空、切换队列或其他控制后，迟到结果不能覆盖较新的用户操作。
+- Track, queue, player, detail, and playlist covers select 64–384 px Navidrome thumbnails according to context and device pixel density. Density is capped at 1.5×, rather than always downloading 600 px images.
+- Mobile titles now include a Home Assistant sidebar menu button and follow Home Assistant narrow-screen and kiosk display rules.
+- Repeated refreshes of the latest recognition record from the conversation sensor no longer replay the request. When no stable event field exists, the Home Assistant state-change timestamp is used as the event identity.
+- Voice-match results for a track or playlist are bound to the queue revision that triggered the match. If a pause, clear, queue change, or other control occurs during matching, a late result cannot overwrite newer user operations.
 
 ## [1.0.6] - 2026-08-31
 
 ### Fixed
 
-- 所有 Panel 渲染路径改为原位协调 DOM；队列与播放器事件、通知、主题和数据刷新不再替换根树、队列容器、CD、按钮、滑杆或相同封面节点，消除连续更新时的页面和图片闪烁。
-- 封面对象缓存数量上限覆盖完整默认队列，同时继续使用总字节上限约束内存；进度拖动预览不会被同曲目的状态事件或计时器覆盖。
+- All Panel rendering paths now reconcile the DOM in place. Queue and player events, notifications, themes, and data refreshes no longer replace the root tree, queue container, CD, buttons, sliders, or matching cover nodes, eliminating page and image flicker during continuous updates.
+- The cover-object cache count limit now covers the full default queue while a total-byte limit continues to constrain memory. A progress-drag preview is not overwritten by status events or timers for the same track.
 
 ## [1.0.5] - 2026-08-31
 
 ### Fixed
 
-- 在随机播放模式下点击歌单曲目时，固定所选曲目为队列第一首，只随机排列后续歌曲。
-- Home Assistant 重复下发窄屏布局属性时只更新宿主样式；右侧局部更新复用原 CD 与队列封面节点，不再因控制操作重建整个 Shadow DOM 或闪动封面。
-- 移除歌单详情顶部的播放全部、下一首播放和加入队列操作，保留逐曲点击播放入口。
+- When a playlist track is clicked in shuffle mode, the selected track is fixed as the first queue item and only subsequent tracks are shuffled.
+- When Home Assistant repeatedly sends narrow-screen layout attributes, only host styles are updated. Partial updates on the right reuse the existing CD and queue-cover nodes, so control operations no longer rebuild the full Shadow DOM or flicker covers.
+- Removed the Play All, Play Next, and Add to Queue actions from the top of playlist details; per-track playback remains available.
 
 ## [1.0.4] - 2026-08-31
 
 ### Fixed
 
-- 播放模式与清空队列改用 Material Design Icons 官方 SVG 路径，修复图标轮廓错误。
-- 修复播放/暂停主按钮在浅色主题悬停时变成纯白，以及音量滑杆使用浏览器黑色默认轨道的问题。
-- 音量命令采用目标值响应和有界确认状态，避免 Home Assistant 尚未刷新实体属性时滑杆立即回弹。
-- 队列和播放器事件只更新右侧区域，并同步复用已缓存封面，避免操作控件时整个页面和图片闪烁。
+- Playback mode and clear-queue controls now use official Material Design Icons SVG paths, correcting icon outlines.
+- Fixed the primary play/pause button becoming solid white on hover in light themes and the volume slider using the browser’s black default track.
+- Volume commands use target-value feedback and bounded confirmation state, preventing the slider from immediately snapping back before Home Assistant refreshes entity attributes.
+- Queue and player events update only the right-side area and reuse cached covers, preventing full-page and image flicker while operating controls.
 
 ## [1.0.3] - 2026-08-31
 
 ### Changed
 
-- 曲目封面、标题、艺术家、专辑和时长区域成为完整播放热区；曲库中立即播放单曲，歌单详情中从所选曲目开始播放完整歌单。
-- 歌单封面可直接打开歌单曲目列表，并提供悬停、按下和键盘聚焦反馈。
-- 曲目/歌单切换改为紧凑分段控件，提供清晰的选中态、深浅主题适配和方向键切换。
-- 通过键盘进入歌单详情时聚焦返回控件，返回列表后恢复至原歌单封面。
-- 移除顶部重复的当前曲目条目，将右侧控制区改为旋转 CD 播放器和上一首、播放/暂停、下一首、模式、清空等图标按钮。
-- 根据所选 Home Assistant 播放器能力启用进度、音量与静音控制；播放器状态继续通过 `state_changed` 实时同步，不增加轮询。
-- 将随机和循环合并为单一三态模式按钮：顺序循环、随机播放、单曲循环；顺序模式默认在队尾后回到队首。
+- The track cover, title, artist, album, and duration area now form a complete playback target. In the library, a track plays immediately; in playlist details, the full playlist plays beginning with the selected track.
+- A playlist cover directly opens its track list and provides hover, pressed, and keyboard-focus feedback.
+- Track/playlist switching now uses a compact segmented control with a clear selected state, light- and dark-theme support, and arrow-key switching.
+- Entering playlist details with the keyboard moves focus to the back control; returning to the list restores focus to the original playlist cover.
+- Removed the duplicate current-track item at the top and changed the right-side control area to a rotating CD player with icon buttons for previous, play/pause, next, mode, clear, and related controls.
+- Progress, volume, and mute controls are enabled according to the selected Home Assistant player’s capabilities. Player status continues to synchronize in real time through `state_changed` without polling.
+- Shuffle and repeat are combined into one three-state mode button: sequential repeat, shuffle, and single-track repeat. In sequential mode, playback returns to the first item after the final item by default.
 
 ## [1.0.2] - 2026-08-31
 
 ### Fixed
 
-- 分离 Navidrome API 地址与音箱公网播放出口：显式配置对外分享地址时，将严格校验后的 `/share/s/` 签名路径安全重写到该入口，不再要求 M3U 已返回相同域名。
-- Config Flow 的协议失败日志增加固定 `reason` 代码，可区分 share API、M3U HTTP、编码、数量、URL、origin 和路径错误，同时不记录 URL 或临时 share 标识。
-- OpenCC 与 pykakasi 字典改为在线程池中的首次规范化任务内懒加载，避免集成初始化阻塞 Home Assistant 事件循环。
+- Separated the Navidrome API address from the speaker’s public playback endpoint. When an external sharing address is explicitly configured, the strictly validated `/share/s/` signed path is safely rewritten to that endpoint; the M3U no longer needs to return the same domain.
+- Config Flow protocol-failure logs now include fixed `reason` codes that distinguish share API, M3U HTTP, encoding, count, URL, origin, and path errors, without logging URLs or temporary share identifiers.
+- OpenCC and pykakasi dictionaries now load lazily in the first normalization task in a thread pool, preventing integration initialization from blocking the Home Assistant event loop.
 
 ## [1.0.1] - 2026-08-31
 
 ### Added
 
-- 新增 `xiaoai_navidrome.resume` 原生服务，从停止队列的当前位置继续播放。
-- Config Flow 连接校验失败时，在 Home Assistant 日志中记录不含凭据的具体校验阶段。
-- 播放错误状态与语音失败日志仅保留固定错误类别，不写入临时 share 标识或上游响应文本。
+- Added the native `xiaoai_navidrome.resume` service, which resumes playback from the current position of a stopped queue.
+- When Config Flow connection validation fails, Home Assistant logs the specific validation stage without credentials.
+- Playback error states and voice-failure logs retain only fixed error categories and do not write temporary share identifiers or upstream response text.
 
 ### Fixed
 
-- Navidrome API 使用私有地址且未显式填写公开分享地址时，从测试 M3U 安全识别一致的公开 share origin。
-- 歌单等专用封面容器始终保留基础方形尺寸和 `object-fit: cover` 裁剪规则。
+- When the Navidrome API uses a private address and no public sharing address is explicitly provided, a consistent public share origin is safely identified from the test M3U.
+- Dedicated cover containers, including playlist cover containers, always retain a base square size and the `object-fit: cover` cropping rule.
 
 ## [1.0.0] - 2026-08-31
 
 ### Added
 
-- Home Assistant 原生 HACS 集成，使用 Config Flow、重新认证和 Options Flow 完成全部配置。
-- Navidrome Subsonic/OpenSubsonic 曲库、歌单、详情和封面访问，以及原生限时 MP3 share 播放。
-- Home Assistant 侧栏播放面板，支持搜索、歌单、封面、详情、日夜主题、动态播放器和响应式移动布局。
-- Home Assistant `.storage` 持久队列，支持上一首、下一首、停止、清空、跳转、插入、追加、随机、单曲循环和列表循环。
-- 直接监听 `state_changed` 同步播放器暂停、停止和不可用状态，不使用播放器轮询或额外长连接。
-- conversation 传感器语音控制，以及管理员可用的 Home Assistant 原生服务动作。
-- 简繁转换、中文完整拼音、日语读音、假名、罗马字和字符距离匹配；不生成拼音首字母。
-- 可选 Ollama 与 OpenAI 兼容 Embedding，并支持向量增量复用和故障时词法降级。
-- 管理员 WebSocket API、管理员封面代理、有限响应体、严格 share origin 校验和脱敏诊断。
-- Ruff、Mypy、Home Assistant 测试、Node 前端测试、Hassfest 与 HACS GitHub Actions 校验。
+- Native Home Assistant HACS integration, with all configuration completed through Config Flow, reauthentication, and Options Flow.
+- Navidrome Subsonic/OpenSubsonic library, playlist, detail, and cover access, plus native time-limited MP3 share playback.
+- Home Assistant sidebar playback Panel with search, playlists, covers, details, light and dark themes, a dynamic player, and responsive mobile layout.
+- A Home Assistant `.storage` persistent queue supporting previous, next, stop, clear, seek, insert, append, shuffle, single-track repeat, and list repeat.
+- Direct `state_changed` listening to synchronize player paused, stopped, and unavailable states, without player polling or additional persistent connections.
+- Conversation-sensor voice control and native Home Assistant service actions available to administrators.
+- Simplified/traditional Chinese conversion, complete Chinese Pinyin, Japanese readings, kana, rōmaji, and character-distance matching; Pinyin initials are not generated.
+- Optional Ollama and OpenAI-compatible embeddings, with incremental vector reuse and lexical fallback on failure.
+- Administrator WebSocket API, administrator cover proxy, bounded response bodies, strict share-origin validation, and redacted diagnostics.
+- Ruff, Mypy, Home Assistant tests, Node frontend tests, Hassfest, and HACS GitHub Actions validation.
 
 ### Fixed
 
-- Navidrome 原生 share 创建和删除使用官方尾斜杠路由，避免直连内网地址时收到重定向并被判定为无效响应。
-- Panel 将封面相对路径直接交给 Home Assistant `fetchWithAuth`，避免公开 HA 地址被重复拼接。
+- Native Navidrome share creation and deletion use official trailing-slash routes, preventing redirects and invalid-response classification when directly accessing a private-network address.
+- The Panel passes relative cover paths directly to Home Assistant `fetchWithAuth`, preventing the public Home Assistant address from being concatenated twice.

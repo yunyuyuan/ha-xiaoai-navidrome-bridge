@@ -1,8 +1,8 @@
-# 架构
+# Architecture
 
-## 设计目标
+## Design Goals
 
-控制平面完整运行在 Home Assistant 内，自定义集成同时承担配置、Navidrome 访问、多语种索引、队列、语音事件、播放器状态同步和 Panel API。音频数据平面不经过 Home Assistant 或额外代理，而由小爱音箱直接从 Navidrome 的限时公开分享流读取。
+The entire control plane runs within Home Assistant. The custom integration manages configuration, Navidrome access, multilingual indexing, the queue, voice events, player-state synchronization, and the Panel API. The audio data plane does not pass through Home Assistant or an additional proxy. Instead, the XiaoAI speaker reads the time-limited public share stream directly from Navidrome.
 
 ```text
 conversation sensor ──┐
@@ -21,76 +21,76 @@ HA media_player.play_media <── /share/s/<signed-id> ─────┘
              └──> XiaoAI speaker downloads from Navidrome
 ```
 
-## Home Assistant 运行时
+## Home Assistant Runtime
 
-每个 Config Entry 创建一个运行时对象，其中包含 Navidrome 客户端、匹配索引和持久播放队列。集成清单限制为单一 Config Entry，从而使侧栏 Panel 和没有显式 `entry_id` 的服务动作具有确定目标。
+Each Config Entry creates a runtime object containing a Navidrome client, a matching index, and a persistent playback queue. The integration manifest limits the integration to one Config Entry. This gives the sidebar Panel and service actions without an explicit `entry_id` a deterministic target.
 
-| 生命周期阶段 | 行为 |
+| Lifecycle stage | Behavior |
 |---|---|
-| `async_setup_entry` | 验证 Navidrome、恢复索引、恢复停止状态的队列、注册事件监听、启动后台同步 |
-| Options 更新 | Home Assistant 重新加载 Config Entry；卸载旧运行时后用新参数重建 |
-| Home Assistant 关闭或卸载 | 取消同步与计时任务，停止活动输出并尽力删除临时 share |
-| Home Assistant 重启 | 恢复曲目、队列位置、随机与循环模式，但不自动恢复声音 |
+| `async_setup_entry` | Validates Navidrome, restores the index, restores the queue in its stopped state, registers event listeners, and starts background synchronization. |
+| Options update | Home Assistant reloads the Config Entry; it unloads the old runtime and rebuilds it with the new parameters. |
+| Home Assistant shutdown or unload | Cancels synchronization and timer tasks, stops active output, and makes a best-effort attempt to delete temporary shares. |
+| Home Assistant restart | Restores the track, queue position, shuffle mode, and repeat mode, but does not automatically resume audio. |
 
-长时间工作只包括可取消的后台曲库同步和当前歌曲的单次计时任务。集成不建立自有常驻 WebSocket、不轮询播放器，也不需要独立 webhook。
+The only long-running work is cancellable background library synchronization and a single timer task for the current track. The integration does not establish its own persistent WebSocket, poll the player, or require a separate webhook.
 
-## Navidrome API 分工
+## Navidrome API Responsibilities
 
-Subsonic/OpenSubsonic API 使用 token 与 salt 鉴权，负责 ping、全曲库分页、搜索、歌单、曲目详情和封面。Navidrome 原生 API 使用短期 bearer token，负责创建和删除可指定 MP3 格式、最大码率与过期时间的分享。
+The Subsonic/OpenSubsonic API authenticates with a token and salt. It handles ping, full-library pagination, search, playlists, track details, and artwork. The Navidrome native API uses a short-lived bearer token. It creates and deletes shares that can specify MP3 format, maximum bitrate, and expiration time.
 
-Navidrome v0.63.2 的公共路由提供 `/share/s/{id}` 音频处理和 `/{id}/m3u` 播放列表。[1] 媒体文件分享按请求中的 `ResourceIDs` 顺序加载曲目，并为每首曲目生成带签名的公开流 ID。[2] [3]
+Navidrome v0.63.2 public routes provide `/share/s/{id}` audio handling and the `/{id}/m3u` playlist. [1] Shared media files load tracks in the `ResourceIDs` request order and generate a signed public stream ID for each track. [2] [3]
 
-队列首次播放或队列顺序变化时，集成为整组曲目创建一个分享并解析 M3U。M3U 条目必须位于 `/share/s/` 下，且不得包含查询参数、userinfo、fragment、控制字符或编码路径穿越。Config Flow 未填写对外分享地址时，同一 M3U 的全部条目必须使用唯一一致的 origin；填写后，集成只保留经过上述校验的签名路径，并把它重写到用户信任的公网 scheme、host、port 和 base path。这样 Home Assistant 可以通过内网地址调用 API，而音箱始终使用独立公网入口。只要曲目 ID 顺序不变且分享剩余时间超过五分钟，上一首、下一首和跳转复用同一组 URL。活动 share 和待撤销 ID 都写入 private Store；替换队列、清空队列或关闭运行时时删除旧分享，临时失败则以一到六十分钟指数退避重试，并在重启后继续撤销。
+When a queue first plays or its order changes, the integration creates one share for the complete track set and parses its M3U. M3U entries must be under `/share/s/` and must not contain query parameters, userinfo, fragments, control characters, or encoded path traversal. When no external share address is supplied in the Config Flow, all entries in the same M3U must use one unique, consistent origin. When an external share address is supplied, the integration retains only the signed paths that pass the preceding validation and rewrites them to the user-trusted public scheme, host, port, and base path. Home Assistant can therefore call the API through an internal address while the speaker consistently uses a separate public endpoint. Previous, next, and seek operations reuse the same URL set while the track ID order is unchanged and the share has more than five minutes remaining. Active shares and IDs pending revocation are written to the private Store. The integration deletes old shares when replacing or clearing a queue or shutting down the runtime. If deletion temporarily fails, it retries with exponential backoff from one to sixty minutes and continues revocation after restart.
 
-## 曲库同步
+## Library Synchronization
 
-曲库同步使用 Navidrome 支持的空查询 `search3` 分页扩展。同步期间继续使用旧索引，所有页面成功获取后才替换内存快照并持久化。空结果或新曲目数低于旧索引安全比例时拒绝覆盖，降低 Navidrome 扫描期间部分结果破坏旧索引的风险。
+Library synchronization uses Navidrome's supported empty-query `search3` pagination extension. The existing index remains in use during synchronization. The integration replaces the in-memory snapshot and persists it only after every page has been fetched successfully. It rejects an overwrite when results are empty or when the new track count falls below the old index's safety ratio. This reduces the risk that partial results during a Navidrome scan corrupt the existing index.
 
-索引存入 Home Assistant `Store`，只包含曲目展示元数据、规范化检索键、可选 embedding 和内容指纹，不包含 Navidrome 密码、Subsonic token、用户查询或语音历史。模型标识和内容指纹均未变化时复用已有向量；新增和变更曲目才重新编码。
+The index is stored in the Home Assistant `Store`. It contains only track display metadata, normalized search keys, optional embeddings, and content fingerprints. It does not contain the Navidrome password, Subsonic token, user queries, or voice history. Existing vectors are reused when both the model identifier and content fingerprint are unchanged. Only new or changed tracks are re-encoded.
 
-## 多语种检索
+## Multilingual Retrieval
 
-查询与曲目分别生成 Unicode NFKC、大小写折叠、简繁转换、完整拼音、日语读音、平假名、片假名和罗马字键。拼音、假名和罗马字是身份转写，只参与精确与字符距离比较；高分包含匹配仅允许原文与简繁等表面变体。索引明确不生成拼音首字母。
+Queries and tracks each generate Unicode NFKC, case-folded, simplified/traditional Chinese conversion, full Pinyin, Japanese readings, Hiragana, Katakana, and romanization keys. Pinyin, kana, and romanization are identity transliterations. They participate only in exact and character-distance comparisons. High-scoring substring matches are permitted only for the original text and simplified/traditional surface variants. The index explicitly does not generate Pinyin initials.
 
-词法与语义通道分别评分。可选 embedding 用于无字符重合的跨语言召回，但不会覆盖强精确词法结果。自动播放同时受第一候选阈值和第一、第二候选分差约束；不满足时服务动作返回错误，语音路径记录脱敏警告且不播放。
+Lexical and semantic channels are scored independently. Optional embeddings support cross-language recall when no characters overlap, but do not override strong exact lexical results. Automatic playback is constrained by both a first-candidate threshold and the score difference between the first and second candidates. If either condition is not met, service actions return an error. The voice path logs a redacted warning and does not play audio.
 
-## 队列一致性
+## Queue Consistency
 
-队列变更由异步操作锁串行执行。Panel 命令携带 `expected_revision`，过期 revision 被拒绝；语音与 HA 原生服务不依赖浏览器 revision，但仍经过同一个锁。分享创建、`media_player.play_media` 调用、状态落盘和计时器更新处于同一串行操作中，避免停止与慢速分享请求交错后重新播放。
+An asynchronous operation lock serializes queue changes. Panel commands carry `expected_revision`, and stale revisions are rejected. Voice commands and native Home Assistant services do not rely on a browser revision, but still pass through the same lock. Share creation, the `media_player.play_media` call, state persistence, and timer updates are performed within the same serialized operation. This prevents a stop operation from interleaving with a slow share request and restarting playback.
 
-| 状态 | 含义 |
+| State | Meaning |
 |---|---|
-| `stopped` | 无自动推进任务；可以保留队列和当前位置 |
-| `loading` | 正在创建或解析 share，并向 HA 播放器下发 URL |
-| `playing` | 已下发当前 URL，并按元数据时长安排自动推进 |
-| `error` | share、Navidrome 或 HA 服务调用失败；错误摘要写入队列状态 |
+| `stopped` | No automatic-advance task runs; the queue and current position may be retained. |
+| `loading` | A share is being created or parsed, and a URL is being sent to the Home Assistant player. |
+| `playing` | The current URL has been issued, and automatic advance is scheduled using the metadata duration. |
+| `error` | A share, Navidrome, or Home Assistant service call failed; an error summary is written to the queue state. |
 
-随机模式只洗牌尚未播放部分。单曲循环让自动推进保持当前项；列表循环在队尾回到队首。非传输型队列变更仍会按当前 `ends_at` 和新 revision 重建计时器，避免开启循环或追加歌曲后丢失自动推进。
+Shuffle mode shuffles only the unplayed portion. Single-track repeat keeps the current item during automatic advance. List repeat returns from the last item to the first. Non-transport queue changes still rebuild the timer using the current `ends_at` and the new revision. This prevents automatic advance from being lost after enabling repeat or adding tracks.
 
-## 播放器状态同步
+## Player-State Synchronization
 
-运行时直接订阅 Home Assistant 全局 `state_changed`，但只处理当前队列所选 `media_player`。内部队列播放期间，实体进入 `paused`、`off`、`standby` 或 `unavailable` 时立即停止并取消计时器，不要求事件前态恰好为 `playing`，因此 `playing → buffering → paused` 也能正确终止。`idle` 可能是自然曲终，因此先排除预计结束前后三十秒窗口，再要求状态连续保持五秒。
+The runtime subscribes directly to Home Assistant's global `state_changed` event, but processes only the `media_player` selected by the current queue. During internal queue playback, if the entity enters `paused`, `off`, `standby`, or `unavailable`, the integration stops immediately and cancels the timer. It does not require the event's previous state to be exactly `playing`, so `playing → buffering → paused` also terminates correctly. Because `idle` may indicate a natural track end, the integration first excludes a thirty-second window before and after the expected end, then requires the state to remain continuous for five seconds.
 
-事件时间必须不早于当前曲目 `started_at`。状态判断进入队列锁后会再次校验当前播放器、当前状态和事件时间，从而防止上一首曲目的延迟暂停事件停止刚开始的新曲目。
+An event timestamp must not precede the current track's `started_at`. After entering the queue lock, state handling validates the current player, current state, and event timestamp again. This prevents a delayed pause event for a previous track from stopping a newly started track.
 
-## Panel 与权限
+## Panel and Permissions
 
-集成注册一个管理员可见的 Home Assistant 侧栏 Panel。静态 JavaScript 和 CSS 由 HA HTTP 组件提供；数据与命令走自定义 WebSocket API，因此继承 HA 登录会话。每个 WebSocket 命令使用 `require_admin`，封面代理同样要求管理员。
+The integration registers an administrator-visible Home Assistant sidebar Panel. The Home Assistant HTTP component serves static JavaScript and CSS. Data and commands use a custom WebSocket API and therefore inherit the Home Assistant login session. Every WebSocket command uses `require_admin`, and the artwork proxy also requires administrator access.
 
-Panel 不保存 Navidrome 密码、HA token 或独立 Panel Token。曲目文本通过 DOM `textContent` 写入，封面使用 HA 鉴权请求取得 Blob，并以有界对象 URL 缓存展示。
+The Panel does not store the Navidrome password, a Home Assistant token, or a separate Panel token. Track text is written through DOM `textContent`. Artwork is retrieved as a Blob through an authenticated Home Assistant request and displayed using a bounded object-URL cache.
 
-## 安全边界
+## Security Boundaries
 
-| 边界 | 控制 |
+| Boundary | Control |
 |---|---|
-| HA 到 Navidrome | TLS 验证默认开启；Config Flow 可显式关闭，仅适合可信网络 |
-| Panel 到 HA | HA 已有登录会话、管理员 WebSocket 权限和管理员 HTTP 视图 |
-| 音箱到 Navidrome | 限时分享 URL；不包含查询参数或账户凭据 |
-| 持久数据 | Home Assistant private `Store`、原子写入；诊断排除敏感配置与曲库内容 |
-| HTTP 响应 | JSON、M3U、封面和 embedding 均有响应体上限与请求超时 |
-| 后台任务 | Config Entry unload 取消并等待任务；异常不会阻止 HA 关闭 |
+| Home Assistant to Navidrome | TLS verification is enabled by default. Config Flow can explicitly disable it, which is suitable only for a trusted network. |
+| Panel to Home Assistant | The existing Home Assistant login session, administrator WebSocket permissions, and administrator HTTP view. |
+| Speaker to Navidrome | Time-limited share URLs that contain neither query parameters nor account credentials. |
+| Persistent data | Home Assistant private `Store` with atomic writes; diagnostics exclude sensitive configuration and library contents. |
+| HTTP responses | JSON, M3U, artwork, and embeddings each have response-body limits and request timeouts. |
+| Background tasks | Config Entry unload cancels and awaits tasks; exceptions do not prevent Home Assistant from shutting down. |
 
-分享 URL 是临时 bearer capability：即使没有查询参数，任何在有效期内获得完整 URL 的客户端都可访问对应媒体。因此应使用 HTTPS，不应把日志或 URL 公开到不受信任位置。
+A share URL is a temporary bearer capability: even without query parameters, any client that obtains the complete URL while it is valid can access the corresponding media. Use HTTPS, and do not expose logs or URLs in untrusted locations.
 
 ## References
 

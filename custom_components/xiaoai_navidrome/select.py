@@ -17,7 +17,8 @@ from .model import NavidromeError, Playlist
 if TYPE_CHECKING:
     from .runtime import XiaoAINavidromeRuntime
 
-_IDLE_OPTION = "播放歌单"
+_IDLE_OPTION = "play_playlist"
+_RESERVED_PROMPT_LABELS = frozenset({"play playlist", "播放歌单"})
 _MAX_OPTION_LENGTH = 96
 
 
@@ -26,7 +27,7 @@ def _playlist_label(name: str) -> str:
     cleaned = "".join(
         " " if unicodedata.category(character).startswith("C") else character for character in name
     )
-    return " ".join(cleaned.split())[:_MAX_OPTION_LENGTH] or "未命名歌单"
+    return " ".join(cleaned.split())[:_MAX_OPTION_LENGTH] or "Unnamed playlist"
 
 
 def _playlist_options(playlists: list[Playlist]) -> tuple[list[str], dict[str, str]]:
@@ -41,7 +42,11 @@ def _playlist_options(playlists: list[Playlist]) -> tuple[list[str], dict[str, s
         base = _playlist_label(playlist.name or "")
         label = base
         suffix = 2
-        while label in playlist_ids or label == _IDLE_OPTION:
+        while (
+            label in playlist_ids
+            or label == _IDLE_OPTION
+            or label.casefold() in _RESERVED_PROMPT_LABELS
+        ):
             label = f"{base} ({suffix})"
             suffix += 1
         options.append(label)

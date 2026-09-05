@@ -131,7 +131,10 @@
   },
   "entity": {
     "select": {
-      "play_playlist": {"name": "Quick play playlist"}
+      "play_playlist": {
+        "name": "Quick play playlist",
+        "state": {"play_playlist": "Play playlist"}
+      }
     }
   }
 }

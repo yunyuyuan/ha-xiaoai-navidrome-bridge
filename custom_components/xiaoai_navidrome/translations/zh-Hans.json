@@ -131,7 +131,10 @@
   },
   "entity": {
     "select": {
-      "play_playlist": {"name": "快速播放歌单"}
+      "play_playlist": {
+        "name": "快速播放歌单",
+        "state": {"play_playlist": "播放歌单"}
+      }
     }
   }
 }

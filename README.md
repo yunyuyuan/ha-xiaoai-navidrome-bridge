@@ -1,136 +1,136 @@
 # XiaoAI Navidrome for Home Assistant
 
-[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://www.hacs.xyz/)
+[![Open your Home Assistant instance and add this repository to HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=yunyuyuan&repository=ha-xiaoai-navidrome-bridge&category=integration)
 [![Home Assistant 2026.8+](https://img.shields.io/badge/Home%20Assistant-2026.8%2B-18BCF2.svg)](https://www.home-assistant.io/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-**XiaoAI Navidrome** 是一个通过 HACS 安装的 Home Assistant 自定义集成。它让小爱音箱播放 Navidrome 单曲与歌单，同时在 Home Assistant 侧栏提供完整的曲库、播放队列和输出设备控制。
+**XiaoAI Navidrome** is a custom Home Assistant integration installed through HACS. It enables XiaoAI speakers to play individual Navidrome tracks and playlists, while providing a complete library, queue, and output-device interface in the Home Assistant sidebar.
 
-Home Assistant 直接承担配置、索引、队列、语音事件和播放器状态同步；**不需要独立服务容器、Home Assistant 长期访问令牌、REST YAML 或额外反向代理路由**。集成使用 Navidrome 原生限时分享流，把不含查询参数和 Subsonic 凭据的公开音频 URL 下发给音箱。Navidrome v0.63.2 已提供 `/share/s/<signed-id>` 公开流与 Range 处理。[1] [2]
+Home Assistant directly manages configuration, indexing, the queue, voice events, and player-state synchronization. **No standalone service container, long-lived Home Assistant access token, REST YAML, or additional reverse-proxy route is required.** The integration uses Navidrome's native time-limited shared streams to send public audio URLs without query parameters or Subsonic credentials to the speaker. Navidrome v0.63.2 provides the public `/share/s/<signed-id>` stream and Range handling.[1] [2]
 
-## 功能
+## Features
 
-| 能力 | 实现 |
+| Capability | Implementation |
 |---|---|
-| HACS 与 UI 配置 | Config Flow、重新认证和 Options Flow；无需手写 secrets 或 YAML |
-| 单曲与歌单 | Home Assistant 原生服务动作、语音口令和侧栏 Panel 共用同一队列 |
-| 音频 URL | Navidrome 原生限时 MP3 分享流；URL 无 `?`、`&`、用户名、salt 或 Subsonic token |
-| 持久队列 | Home Assistant `.storage` 持久化；重启后恢复内容但保持停止状态 |
-| 队列控制 | 上一首、下一首、停止、清空、跳转、插入下一首、追加、随机、单曲循环、列表循环 |
-| 状态同步 | 直接监听 HA `state_changed`；外部暂停或停止后立即取消自动切歌，不轮询、不使用长连接或 webhook |
-| 多语种匹配 | NFKC、大小写、简繁、中文全拼、日文读音、假名、罗马字和字符距离 |
-| 防误播 | 低置信度和候选分差不足时拒绝自动播放 |
-| 可选语义匹配 | 支持 Ollama 与 OpenAI 兼容 Embedding；模型故障时自动退化为词法匹配 |
-| 原生 Panel | 日/夜主题、响应式布局、封面、详情、歌单、队列和动态播放器选择 |
-| 权限边界 | Panel、WebSocket 命令、原生服务动作和封面代理均仅允许 Home Assistant 管理员访问 |
+| HACS and UI configuration | Config Flow, reauthentication, and Options Flow; no handwritten secrets or YAML |
+| Tracks and playlists | Home Assistant native service actions, voice phrases, and the sidebar Panel use the same queue |
+| Audio URLs | Navidrome native time-limited MP3 shared streams; URLs contain no `?`, `&`, username, salt, or Subsonic token |
+| Persistent queue | Persisted in Home Assistant `.storage`; contents are restored after restart, while playback remains stopped |
+| Queue controls | Previous, next, stop, clear, jump, play next, append, shuffle, repeat one, and repeat queue |
+| State synchronization | Listens directly to HA `state_changed`; an external pause or stop immediately cancels automatic track advancement, with no polling, long connection, or webhook |
+| Multilingual matching | NFKC, case normalization, Simplified/Traditional Chinese conversion, full Chinese pinyin, Japanese readings, kana, romanization, and character distance |
+| Misplay prevention | Refuses automatic playback when confidence is low or the candidate-score gap is insufficient |
+| Optional semantic matching | Supports Ollama and OpenAI-compatible embeddings; automatically falls back to lexical matching when a model fails |
+| Native Panel | Light and dark themes, responsive layout, artwork, details, playlists, queue, and dynamic player selection |
+| Permission boundary | The Panel, WebSocket commands, native service actions, and artwork proxy are restricted to Home Assistant administrators |
 
-## 架构
+## Architecture
 
 ```text
-小爱 conversation 传感器 ──state_changed──┐
-Home Assistant 原生服务动作 ───────────────┼──> HACS 集成
-HA 侧栏 Panel ──鉴权 WebSocket────────────┘       │
-                                                   ├── 本地多语种索引
-                                                   ├── HA .storage 持久队列
-                                                   ├── 可选 Ollama / OpenAI Embedding
-                                                   └── Navidrome API 创建限时 MP3 share
+XiaoAI conversation sensor ──state_changed──┐
+Home Assistant native service actions ──────┼──> HACS integration
+HA sidebar Panel ──authenticated WebSocket──┘       │
+                                                   ├── Local multilingual index
+                                                   ├── HA .storage persistent queue
+                                                   ├── Optional Ollama / OpenAI embeddings
+                                                   └── Navidrome API creates time-limited MP3 shares
                                                               │
-HA media_player.play_media <── 无查询参数 share URL ───────────┘
+HA media_player.play_media <── query-free share URL ─────────┘
              │
-             └──> 小爱音箱直接从 Navidrome `/share/s/...` 拉取音频
+             └──> XiaoAI speaker fetches audio directly from Navidrome `/share/s/...`
 ```
 
-Panel 通过 Home Assistant 已有登录会话调用集成 WebSocket 命令，不接触 Navidrome 密码。音箱只获得当前队列对应的限时分享能力 URL。完整设计见 [`docs/architecture.md`](docs/architecture.md)。
+The Panel calls integration WebSocket commands through the existing Home Assistant login session and never accesses the Navidrome password. The speaker receives only the time-limited share capability URL for the active queue. See [`docs/architecture.md`](docs/architecture.md) for the complete design.
 
-## 前提条件
+## Prerequisites
 
-| 组件 | 要求 |
+| Component | Requirement |
 |---|---|
-| Home Assistant | **2026.8.0 或更高版本** |
-| 安装方式 | 已安装 HACS；也可手工复制 `custom_components/xiaoai_navidrome` |
-| Navidrome | **v0.63.2 或更高版本**，可从 Home Assistant 访问 |
-| Navidrome 分享 | `EnableSharing=true`；官方默认开启。反向代理必须允许 `/share/` [3] |
-| 分享公网地址 | 音箱必须能访问公开的 `/share/` 路由；内外地址不同时，在“对外分享地址”填写音箱使用的 HTTPS 入口。集成会把 Navidrome M3U 中经过严格校验的 `/share/s/` 路径重写到该入口 [4] |
-| 播放实体 | 支持 `media_player.play_media`，并支持 `media_pause` 或 `media_stop` |
-| 语音实体 | 可选；由米家集成提供、状态值包含小爱识别文本的 conversation `sensor` |
+| Home Assistant | **2026.8.0 or later** |
+| Installation method | HACS installed; alternatively, copy `custom_components/xiaoai_navidrome` manually |
+| Navidrome | **v0.63.2 or later**, reachable from Home Assistant |
+| Navidrome sharing | `EnableSharing=true`; enabled by default upstream. The reverse proxy must permit `/share/`.[3] |
+| Public share address | The speaker must be able to reach a public `/share/` route. If internal and external addresses differ, enter the HTTPS endpoint used by the speaker as the external share address. The integration rewrites strictly validated `/share/s/` paths from Navidrome M3U output to that endpoint.[4] |
+| Playback entity | Supports `media_player.play_media` and either `media_pause` or `media_stop` |
+| Voice entity | Optional; a conversation `sensor` supplied by the Mi Home integration whose state contains XiaoAI-recognized text |
 
-建议为本集成创建独立的普通 Navidrome 用户，只授予需要播放的媒体库权限。Navidrome 分享继承创建者的媒体库访问范围。[3]
+Create a dedicated ordinary Navidrome user for this integration and grant access only to the media libraries that it must play. Navidrome shares inherit the creator's media-library access scope.[3]
 
-## 安装
+## Installation
 
-### 1. 通过 HACS 下载
+### 1. Install through HACS
 
-在 HACS 中打开 **集成 → 右上角菜单 → 自定义存储库**，填入：
+In HACS, open **Integrations → menu in the upper-right corner → Custom repositories**, then enter:
 
 ```text
 https://github.com/yunyuyuan/ha-xiaoai-navidrome-bridge
 ```
 
-类别选择 **Integration**，下载最新版本并重启 Home Assistant。HACS 自定义集成仓库要求运行文件位于唯一的 `custom_components/<domain>/` 目录，本仓库遵循该结构。[5]
+Select the **Integration** category, download the latest release, and restart Home Assistant. HACS custom integration repositories require runtime files in a single `custom_components/<domain>/` directory; this repository follows that layout.[5]
 
-手工安装时，将 `custom_components/xiaoai_navidrome` 完整复制到：
+For a manual installation, copy the complete `custom_components/xiaoai_navidrome` directory to:
 
 ```text
 /config/custom_components/xiaoai_navidrome
 ```
 
-然后重启 Home Assistant。
+Then restart Home Assistant.
 
-### 2. 在 Home Assistant 中添加集成
+### 2. Add the integration in Home Assistant
 
-进入 **设置 → 设备与服务 → 添加集成 → XiaoAI Navidrome**。安装向导分两步完成全部配置：
+Open **Settings → Devices & services → Add integration → XiaoAI Navidrome**. The setup wizard completes configuration in two steps:
 
-| 步骤 | 内容 |
+| Step | Contents |
 |---|---|
-| Navidrome 连接 | API 服务地址、可选对外分享地址、用户名、密码、TLS 证书验证 |
-| 播放与匹配 | 侧栏名称、显示开关、页面语言、默认小爱播放器、可选 conversation 传感器、语音前缀、队列参数和可选 Embedding |
+| Navidrome connection | API server address, optional external share address, username, password, and TLS certificate validation |
+| Playback and matching | Sidebar title, visibility setting, Panel language, default XiaoAI player, optional conversation sensor, voice prefixes, queue parameters, and optional embeddings |
 
-连接验证会检查 Subsonic 鉴权、Navidrome 原生登录，以及在非空曲库中创建并删除一次五分钟测试 share。任何一步失败都会在 Home Assistant 日志中标明 `Subsonic ping`、`native login`、`library probe` 或 `share probe`；协议错误还会包含固定 `reason` 代码，但不会记录密码、share ID 或完整 URL。配置完成后，集成在后台同步曲库；刷新期间当前索引仍可使用。
+Connection validation checks Subsonic authentication, the native Navidrome login, and creation and deletion of a five-minute test share from a non-empty library. If any step fails, the Home Assistant log identifies `Subsonic ping`, `native login`, `library probe`, or `share probe`. Protocol errors also include a fixed `reason` code, but passwords, share IDs, and complete URLs are not logged. After setup, the integration synchronizes the library in the background; the current index remains available during refresh.
 
-Navidrome 通过反向代理公开时，建议填写音箱也能访问的 HTTPS 地址，例如：
+When Navidrome is published through a reverse proxy, enter the HTTPS address that the speaker can also reach, for example:
 
 ```text
-https://music.example.com
+https://<public-share-host>
 ```
 
-如果 Home Assistant 访问 Navidrome 的内部地址与音箱访问地址不同，可以同时在 Navidrome 中设置：
+When the internal Navidrome address used by Home Assistant differs from the address used by the speaker, you can also set the following in Navidrome:
 
 ```text
-ND_SHAREURL=https://music.example.com
+ND_SHAREURL=https://<public-share-host>
 ```
 
-Config Flow 第一页的 **Navidrome 地址** 是 Home Assistant 调用 API 的地址，可以是 `127.0.0.1`、局域网 IP 或解析到内网 IP 的域名。**Navidrome 对外分享地址** 是音箱下载音频的目标入口；填写后，集成从 Navidrome M3U 取得并严格校验无查询参数的 `/share/s/` 签名路径，再把该路径重写到此公网入口。M3U 原本返回内网域名、另一个反向代理域名或相对路径均可。该字段留空时，集成才直接采用 M3U 中唯一一致的 origin。无论哪种方式，鉴权、曲库访问、share 创建和 M3U 获取始终走内部 API 地址。确认公网反向代理放行 `/share/`。
+The **Navidrome address** on the first Config Flow page is the address Home Assistant uses for API requests. It can be `127.0.0.1`, a LAN IP address, or a hostname resolving to an internal IP address. The **external Navidrome share address** is the endpoint from which the speaker downloads audio. When provided, the integration obtains a query-free `/share/s/` signed path from Navidrome M3U output, validates it strictly, and rewrites that path to the public endpoint. M3U output may contain an internal hostname, a different reverse-proxy hostname, or a relative path. When this field is blank, the integration uses the only consistent origin returned in the M3U output. In all cases, authentication, library access, share creation, and M3U retrieval always use the internal API address. Ensure that the public reverse proxy permits `/share/`.
 
-### 3. 首次检查
+### 3. Initial check
 
-重启后打开配置的侧栏页面（默认名称为 **XiaoAI Music**）。在 Panel 顶部确认连接状态，在队列卡片选择输出音箱，并点击 **Sync library**。如果配置时已经选择播放器，Panel 会直接显示该选择。
+After restarting, open the configured sidebar page (the default title is **XiaoAI Music**). Confirm the connection status at the top of the Panel, select an output speaker in the queue card, and click **Sync library**. If a player was selected during configuration, the Panel displays that selection immediately.
 
-## 使用
+## Usage
 
-### 原生侧栏 Panel
+### Native sidebar Panel
 
-Panel 默认使用英语并打开歌单页；选择简体中文后，“歌单”标签位于“曲目”之前。页面支持曲库和歌单分页、搜索、封面与详情，以及带旋转 CD 的完整播放器。上一首、播放/暂停、下一首、播放模式和清空队列使用 Material Design Icons 图标按钮；音量、静音与进度拖动按照当前 Home Assistant `media_player` 公布的能力动态启用，不支持原生 `SEEK` 时进度条保持只读。桌面歌单以带封面的卡片展示；移动端使用不创建歌单封面元素的单列紧凑列表，整行点击即可进入详情，从宽屏切换为窄屏时也会原位移除已有歌单封面。其他封面按使用场景和设备像素密度从 Navidrome 请求 64 至 384 px 缩略图，密度按 1.5 倍封顶，避免传输远大于显示尺寸的图片。封面 Blob 缓存在同一 Home Assistant 浏览器页面的 Panel 往返间复用，返回页面不会重新下载已缓存的同尺寸封面；页面真正卸载时会统一释放对象 URL。所有状态、通知、主题和数据刷新均原位更新现有 DOM，不替换根树、队列容器、CD、按钮、滑杆或相同封面节点；Home Assistant 重复下发的布局属性也不会重建页面。离开再返回 Panel 时会立即重新订阅队列并读取本地快照，未完成的旧页面命令不会阻塞新操作；曲库和歌单随后在后台刷新。桌面双栏模式下，右侧队列面板会以 `12px` 顶部间距吸附在视口中；单栏和移动端保持普通布局。移动端左上角提供 Home Assistant 侧栏菜单，并把播放器和队列放在曲库上方；主题可以跟随 Home Assistant，也可固定为日间或夜间。
+The Panel uses English by default, opens the playlists page, and places the **Playlists** tab before **Tracks**. The page supports paginated libraries and playlists, search, artwork and details, and a complete player with a rotating CD. Previous, play/pause, next, playback mode, and clear-queue controls use Material Design Icons. Volume, mute, and seek controls are dynamically enabled according to the capabilities reported by the current Home Assistant `media_player`; when native `SEEK` is unavailable, the progress control remains read-only. On desktop, playlists are displayed as artwork cards. On mobile, a compact single-column list is used without playlist-artwork elements; tapping a row opens its details, and existing playlist artwork is removed in place when the viewport changes from wide to narrow. For other artwork, Navidrome thumbnails from 64 to 384 px are requested according to display use and device pixel density, capped at 1.5×, to avoid transferring images far larger than their display size. Artwork Blobs are cached and reused across Panel navigation within the same Home Assistant browser page, so returning to a page does not download an already-cached artwork size again; object URLs are released together when the page is actually unloaded. All state, notifications, theme changes, and data refreshes update the existing DOM in place rather than replacing the root tree, queue container, CD, buttons, sliders, or identical artwork nodes; repeated layout properties delivered by Home Assistant also do not rebuild the page. When leaving and returning to the Panel, it immediately resubscribes to the queue and reads a local snapshot; unfinished commands from the old page do not block new operations, while library and playlist data refresh in the background. In the desktop two-column layout, the queue panel on the right is sticky with a `12px` top offset. Single-column and mobile layouts remain in normal flow. On mobile, a Home Assistant sidebar menu is available in the upper left, and the player and queue appear above the library. The theme may follow Home Assistant or be fixed to light or dark.
 
-这个页面由集成注册，不属于 Lovelace 仪表盘，所以不会出现在 Home Assistant 的“仪表盘”管理页。进入 **设置 → 设备与服务 → XiaoAI Navidrome → 配置**，可以修改侧栏和页面名称、在英语与简体中文之间切换，或关闭 **显示侧栏面板**。语言只能在该配置页修改，主页和 Panel 内不提供第二个入口。关闭后只移除侧栏入口，语音点歌、服务动作、持久队列和自动切歌继续运行；重新打开同一选项即可恢复入口。
+The page is registered by the integration rather than being a Lovelace dashboard, so it does not appear in Home Assistant dashboard management. Open **Settings → Devices & services → XiaoAI Navidrome → Configure** to change the sidebar and page titles, switch between English and Simplified Chinese, or disable **Show sidebar panel**. Language can be changed only on this configuration page; there is no second language entry point on the dashboard or in the Panel. Disabling the option removes only the sidebar entry. Voice playback, service actions, the persistent queue, and automatic track advancement continue to operate; re-enabling the same option restores the entry.
 
-| Panel 操作 | 行为 |
+| Panel action | Behavior |
 |---|---|
-| 立即播放曲目 | 用该曲目替换队列并播放 |
-| 下一首播放 | 插入到当前曲目之后 |
-| 加入队列 | 追加到队尾 |
-| 点击曲目的封面、标题或元数据 | 曲库中立即播放该曲目；歌单中固定从该曲目开始播放完整歌单，随机模式只打乱后续歌曲 |
-| 点击歌单卡片或移动端歌单行 | 打开该歌单的曲目列表 |
-| 点击队列曲目 | 不改变队列顺序，只切换当前指针并播放 |
-| 播放模式按钮 | 在顺序循环、随机播放、单曲循环之间切换；顺序模式到队尾后回到队首 |
-| 进度 / 音量 / 静音 | 由所选播放器的 `SEEK`、`VOLUME_SET`、`VOLUME_MUTE` 能力决定是否可用 |
-| 暂停 | 暂停或停止音箱，保留队列；播放器支持原生继续时从暂停位置恢复 |
-| 清空 | 停止音箱并删除整个队列 |
+| Play a track now | Replaces the queue with that track and starts playback |
+| Play next | Inserts the track after the current track |
+| Add to queue | Appends the track to the end of the queue |
+| Click a track's artwork, title, or metadata | Immediately plays that track in the library; in a playlist, plays the complete playlist beginning with that track, while shuffle randomizes only following tracks |
+| Click a playlist card or mobile playlist row | Opens the track list for that playlist |
+| Click a queue track | Leaves queue order unchanged, moves the current pointer, and starts playback |
+| Playback mode button | Cycles among sequential queue repeat, shuffle, and repeat one; sequential mode returns to the first track after the last track |
+| Progress / volume / mute | Availability depends on `SEEK`, `VOLUME_SET`, and `VOLUME_MUTE` capabilities of the selected player |
+| Pause | Pauses or stops the speaker while retaining the queue; resumes from the paused position when native resume is available |
+| Clear | Stops the speaker and removes the entire queue |
 
-队列与索引由 Home Assistant 后端持有，关闭浏览器不会中断自动切歌。队列操作带 revision 乐观并发控制；单曲和歌单语音匹配同样绑定触发时的 revision，因此匹配期间发生暂停、清空、换队列或其他控制后，迟到结果不会覆盖较新的操作。conversation 传感器周期性刷新同一条最近记录时也不会重复点歌。
+The Home Assistant backend owns the queue and index, so closing the browser does not interrupt automatic track advancement. Queue operations use revision-based optimistic concurrency control. Track and playlist voice matching is also bound to the revision at trigger time; therefore, a late result cannot overwrite a newer action if a pause, clear, queue replacement, or other control occurs while matching. Periodic refreshes of the same recent conversation-sensor record also do not trigger duplicate playback.
 
-### 语音口令
+### Voice phrases
 
-在 Config Flow 中选择 conversation 传感器后，不需要自动化 YAML。默认识别以下口令：
+After selecting a conversation sensor in Config Flow, no automation YAML is required. The default recognized phrases are shown below. These Chinese literals are the default user-configurable voice prefixes and command examples; they are intentionally retained because the conversation sensor recognizes XiaoAI speech text.
 
 ```text
 小爱同学，播放家庭音乐<曲目名称><歌手名称>
@@ -143,94 +143,94 @@ Panel 默认使用英语并打开歌单页；选择简体中文后，“歌单�
 小爱同学，家庭音乐停止
 ```
 
-单曲、歌单、Panel 和服务动作共用同一个 Home Assistant 队列，因此语音启动歌单后会立即同步到 Panel，上一首、下一首和停止也控制同一状态。集成优先用 conversation timestamp、conversation ID 或 sequence 对事件去重；传感器不提供事件标识时才使用五秒文本窗口。新事件即使文本相同也可立即执行，旧事件的属性刷新不会重复点歌。
+Tracks, playlists, the Panel, and service actions use one shared Home Assistant queue. A voice-started playlist is therefore synchronized to the Panel immediately, and previous, next, and stop control the same state. The integration deduplicates events using the conversation timestamp, conversation ID, or sequence where available; otherwise it uses Home Assistant's state-change time. Stale records are rejected, and attribute refreshes for an already processed event do not trigger duplicate playback.
 
-如果实体状态文本包含额外标点或礼貌词，集成会从最后一个配置的口令前缀之后提取查询。可以在 **设备与服务 → XiaoAI Navidrome → 配置** 中修改两个前缀。
+If an entity state contains extra punctuation or polite wording, the integration extracts the query after the last configured voice prefix. The two prefixes can be changed in **Devices & services → XiaoAI Navidrome → Configure**.
 
-### Home Assistant 服务动作
+### Home Assistant service actions
 
-集成注册以下原生动作，可在自动化、脚本和开发者工具中使用：
+The integration registers the following native actions for automations, scripts, and Developer Tools:
 
-| 动作 | 参数 | 返回 |
+| Action | Parameters | Returns |
 |---|---|---|
-| `xiaoai_navidrome.play` | `query`，可选 `media_player` | 匹配详情和队列状态 |
-| `xiaoai_navidrome.play_playlist` | `query`，可选 `media_player` | 歌单匹配和队列状态 |
-| `xiaoai_navidrome.previous` | 无 | 队列状态 |
-| `xiaoai_navidrome.next` | 无 | 队列状态 |
-| `xiaoai_navidrome.pause` | 无 | 暂停并保留队列与指针 |
-| `xiaoai_navidrome.resume` | 无 | 从保留的当前位置继续播放并返回队列状态 |
-| `xiaoai_navidrome.stop` | 无 | 队列状态 |
-| `xiaoai_navidrome.clear_queue` | 无 | 队列状态 |
-| `xiaoai_navidrome.sync_library` | 无 | 索引状态 |
+| `xiaoai_navidrome.play` | `query`, optional `media_player` | Match details and queue state |
+| `xiaoai_navidrome.play_playlist` | `query`, optional `media_player` | Playlist match and queue state |
+| `xiaoai_navidrome.previous` | None | Queue state |
+| `xiaoai_navidrome.next` | None | Queue state |
+| `xiaoai_navidrome.pause` | None | Pauses and retains the queue and pointer |
+| `xiaoai_navidrome.resume` | None | Resumes from the retained position and returns queue state |
+| `xiaoai_navidrome.stop` | None | Queue state |
+| `xiaoai_navidrome.clear_queue` | None | Queue state |
+| `xiaoai_navidrome.sync_library` | None | Index state |
 
-这些全局动作按 Home Assistant 管理员服务注册。无用户 context 的 HA 内部自动化仍可调用；普通非管理员账户不能通过通用 WebSocket 绕过 Panel 权限。
+These global actions are registered as Home Assistant administrator services. Internal Home Assistant automations without a user context can still call them; ordinary non-administrator accounts cannot bypass Panel permissions through the generic WebSocket.
 
-### 首页仪表盘简要控制
+### Compact dashboard controls
 
-不需要安装额外前端卡片。可以在首页仪表盘用 Home Assistant 原生 **按钮卡片**分别调用 `xiaoai_navidrome.previous`、`xiaoai_navidrome.pause`、`xiaoai_navidrome.resume` 和 `xiaoai_navidrome.next`。集成同时提供名为 **快速播放歌单** 的 `select` 实体；把它加入实体卡片后，选择任一 Navidrome 歌单会按精确歌单 ID 替换共享队列并立即播放，成功后选择器回到“播放歌单”提示项，因此同一歌单也可以再次选择。歌单名称重复时会自动增加序号以保持每个选项可单独选择，后端 ID 不会显示在仪表盘中。
+No additional frontend card is required. On the home dashboard, use Home Assistant native **button cards** to call `xiaoai_navidrome.previous`, `xiaoai_navidrome.pause`, `xiaoai_navidrome.resume`, and `xiaoai_navidrome.next` separately. The integration also provides a `select` entity named **Quick play playlist**. Add it to an entity card, and selecting any Navidrome playlist replaces the shared queue by its exact playlist ID and starts playback immediately. After success, the selector returns to the **Play playlist** prompt, so the same playlist can be selected again. When playlist names are duplicated, an ordinal is added so that each option remains individually selectable; backend IDs are not displayed on the dashboard.
 
-该选择实体在集成载入时读取歌单，并在侧栏刷新歌单列表后同步更新选项；它不轮询播放器。仪表盘用户触发播放时仍遵守集成的管理员权限边界，Home Assistant 内部自动化可正常调用。
+The select entity reads playlists when the integration loads and updates its options when the sidebar refreshes its playlist list; it does not poll the player. Dashboard-initiated playback continues to observe the integration's administrator permission boundary, while internal Home Assistant automations can call it normally.
 
-示例：
+Example:
 
 ```yaml
 action: xiaoai_navidrome.play
 data:
-  query: "Synthetic Track Example Artist"
+  query: "<track title> <artist>"
 ```
 
-## 多语种匹配
+## Multilingual matching
 
-每首曲目建立原始元数据、Unicode NFKC、简繁转换、完整拼音、日文读音、平假名、片假名和罗马字检索键。**不会生成拼音首字母**。转写键只参与身份精确与字符距离匹配，不参与高分子串包含，从而降低短字符串碰撞。
+Each track receives search keys for original metadata, Unicode NFKC, Simplified/Traditional Chinese conversion, full pinyin, Japanese readings, hiragana, katakana, and romanization. **Pinyin initials are not generated.** Transliteration keys participate only in identity-exact and character-distance matching, not high-score substring containment, reducing collisions among short strings.
 
-无字符重合的跨语言关系由可选 Embedding 独立处理。语义相似度不能覆盖强精确词法命中；第一名分数或候选分差不足时，集成拒绝自动播放。模型不可用时，查询继续使用词法索引。模型名与曲目文档未变化时，同步会复用原有向量，只编码新增或变更曲目。
+Optional embeddings independently handle cross-language relationships with no character overlap. Semantic similarity cannot override a strong exact lexical match; the integration refuses automatic playback when the top score or the gap between candidates is insufficient. If a model is unavailable, a query continues through the lexical index. When the model name and track document are unchanged, synchronization reuses existing vectors and encodes only added or changed tracks.
 
-Ollama、Qwen3 Embedding 和低功耗 NAS 配置见 [`docs/local-model-research.md`](docs/local-model-research.md)。Embedding 不是必要组件，建议先用默认词法索引验证完整播放链路。
+See [`docs/local-model-research.md`](docs/local-model-research.md) for Ollama, Qwen3 Embedding, and low-power NAS configuration. Embeddings are not required; first verify the complete playback path with the default lexical index.
 
-## 状态同步与自动切歌
+## State synchronization and automatic track advancement
 
-自动切歌依据 Navidrome 曲目时长加配置的曲间缓冲。集成直接监听 Home Assistant `state_changed` 事件；内部队列播放期间，目标播放器进入 `paused`、`off`、`standby` 或 `unavailable` 时立即停止队列计时器，即使中间短暂经过 `buffering` 也不会漏掉。较容易出现在自然曲终的 `idle` 会经过五秒确认，并在预计曲终附近被忽略，避免干扰正常下一首。
+Automatic track advancement uses the Navidrome track duration plus the configured inter-track buffer. The integration listens directly to Home Assistant `state_changed` events. While its internal queue is playing, it immediately stops the queue timer when the target player enters `paused`, `off`, `standby`, or `unavailable`, even if it briefly passes through `buffering`. The `idle` state, which is more likely at a natural track end, receives a five-second confirmation and is ignored near the expected track end to avoid disrupting normal advancement.
 
-这种机制没有轮询、Bridge webhook 或额外长连接。它只处理当前队列所选播放器，并以当前曲目启动时间排除过期状态事件。
+This mechanism uses no polling, Bridge webhook, or additional long-lived connection. It processes only the player selected for the active queue and uses the current track start time to discard stale state events.
 
-## 安全模型
+## Security model
 
-| 数据或接口 | 边界 |
+| Data or interface | Boundary |
 |---|---|
-| Navidrome 密码 | 只保存在 Home Assistant Config Entry；诊断会脱敏 |
-| Subsonic token 与 salt | 只用于 HA 到 Navidrome 的请求，不发送到 Panel 或音箱 |
-| Panel WebSocket | 使用 HA 登录会话并要求管理员权限 |
-| 封面 | 经 HA 鉴权代理，限制响应大小；浏览器不获得 Navidrome 凭据 |
-| 音频 share URL | 限时公开能力 URL；无查询参数，但在过期前持有者可访问 |
-| 队列和索引 | 保存在 HA `.storage`；不包含 Navidrome 密码或语音历史 |
+| Navidrome password | Stored only in the Home Assistant Config Entry; diagnostics redact it |
+| Subsonic token and salt | Used only for requests from HA to Navidrome; never sent to the Panel or speaker |
+| Panel WebSocket | Uses the HA login session and requires administrator privileges |
+| Artwork | Served through an HA-authenticated proxy with a response-size limit; the browser receives no Navidrome credentials |
+| Audio share URL | A time-limited public capability URL without query parameters; anyone holding it can access it until expiry |
+| Queue and index | Stored in HA `.storage`; contain neither the Navidrome password nor voice records |
 
-集成把活动和待撤销的 share ID 写入 private HA Store；替换队列、清空队列或卸载时删除不再使用的 Navidrome share。临时删除失败会在运行期指数退避重试，异常关机后下次加载继续撤销。无法恢复的 share 仍会在默认六小时有效期结束后失效。不要把正在有效期内的 share URL 发布到不受信任的位置。
+The integration records active and pending-revocation share IDs in a private HA Store. It deletes unused Navidrome shares when replacing or clearing a queue, or when unloading. Temporary deletion failures are retried with exponential backoff during runtime, and revocation resumes on the next load after an unexpected shutdown. Any share that cannot be revoked still expires after the default six-hour lifetime. Do not publish an active share URL in an untrusted location.
 
-## 故障排查
+## Troubleshooting
 
-| 现象 | 优先检查 |
+| Symptom | First checks |
 |---|---|
-| Config Flow 提示无法连接 | Navidrome 地址、容器网络、TLS 证书和普通用户凭据 |
-| 提示响应无效 | 在 HA 日志搜索 `Navidrome setup validation failed`，根据其中的校验阶段检查 Navidrome 原生 API、分享功能或 `/share/` 路由 |
-| Panel 有队列但音箱无声 | 音箱能否访问 `ND_SHAREURL` 生成的地址；播放器是否支持 URL `play_media` |
-| 暂停后仍自动下一首 | HA 中该实体是否真的从 `playing` 变为 `paused/off/standby`；下载集成诊断并检查实体 ID |
-| 曲库新增后未出现 | 等待刷新周期，或调用 `xiaoai_navidrome.sync_library` / Panel 的“同步曲库” |
-| Embedding 数量不增加 | Ollama 模型是否已拉取、URL 是否可从 HA 访问；模型失败不影响词法同步 |
-| 语音无反应 | conversation 传感器当前状态、配置的口令前缀、HA 日志中的集成警告 |
+| Config Flow reports that it cannot connect | Navidrome address, container networking, TLS certificate, and ordinary-user credentials |
+| Invalid response message | Search HA logs for `Navidrome setup validation failed`, then use its validation stage to check the native Navidrome API, sharing feature, or `/share/` route |
+| The Panel has a queue but the speaker is silent | Whether the speaker can reach the address generated by `ND_SHAREURL`; whether the player supports URL `play_media` |
+| It advances after a pause | Whether the entity actually changes from `playing` to `paused/off/standby` in HA; download integration diagnostics and verify the entity ID |
+| Newly added library content does not appear | Wait for the refresh interval, or call `xiaoai_navidrome.sync_library` / **Sync library** in the Panel |
+| Embedding count does not increase | Whether the Ollama model is pulled and its URL is reachable from HA; model failure does not affect lexical synchronization |
+| No voice response | The current conversation-sensor state, configured phrase prefixes, and integration warnings in HA logs |
 
-在 **设置 → 设备与服务 → XiaoAI Navidrome → 下载诊断** 获取脱敏状态。诊断不包含密码、API Key、曲目元数据、查询文本或语音记录。
+Obtain redacted status from **Settings → Devices & services → XiaoAI Navidrome → Download diagnostics**. Diagnostics do not include passwords, API keys, track metadata, query text, or voice records.
 
-初始化阶段的日志可在 **设置 → 系统 → 日志** 中搜索 `xiaoai_navidrome`。你的 Home Assistant 容器名为 `homeassistant` 时，也可以直接执行：
+During initialization, search **Settings → System → Logs** for `xiaoai_navidrome`. If the Home Assistant container is named `homeassistant`, you can also run:
 
 ```bash
 docker logs --since 10m homeassistant 2>&1 | grep -iE 'xiaoai_navidrome|Navidrome setup validation'
 ```
 
-`127.0.0.1` 始终指向 Home Assistant 进程所在的网络命名空间。Home Assistant 使用 host network 时它可以访问宿主机端口；使用普通 Docker bridge、HA OS 或远端 Navidrome 时，应填写该环境实际可达的局域网地址或服务名。
+`127.0.0.1` always refers to the network namespace containing the Home Assistant process. It can reach host ports when Home Assistant uses host networking. With a standard Docker bridge, HA OS, or remote Navidrome, enter the LAN address or service name that is actually reachable from that environment.
 
-## 开发与发布
+## Development and release
 
-本仓库只包含一个 HACS integration。运行 `make setup` 创建测试环境，运行 `make check` 执行 Ruff、Mypy、Home Assistant 2026.8.3 测试、前端语法和 Node 单元测试。HACS 与 Hassfest 另外在 GitHub Actions 中验证。发布规则见 [`docs/releasing.md`](docs/releasing.md)。
+This repository contains one HACS integration. Run `make setup` to create the test environment, then run `make check` to execute Ruff, Mypy, Home Assistant 2026.8.3 tests, frontend syntax checks, and Node unit tests. HACS and Hassfest are additionally validated in GitHub Actions. See [`docs/releasing.md`](docs/releasing.md) for release rules.
 
 ## References
 

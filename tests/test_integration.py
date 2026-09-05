@@ -175,8 +175,8 @@ async def test_setup_service_voice_and_player_state_sync(
         assert playlist_select_id is not None
         playlist_select = hass.states.get(playlist_select_id)
         assert playlist_select is not None
-        assert playlist_select.state == "播放歌单"
-        assert playlist_select.attributes["options"] == ["播放歌单", "Synthetic Playlist"]
+        assert playlist_select.state == "play_playlist"
+        assert playlist_select.attributes["options"] == ["play_playlist", "Synthetic Playlist"]
 
         websocket = await hass_ws_client(hass)
         await websocket.send_json_auto_id({"type": f"{DOMAIN}/config", "entry_id": entry.entry_id})

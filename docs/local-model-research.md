@@ -1,46 +1,46 @@
-# 本地多语种 Embedding 配置
+# Local Multilingual Embedding Configuration
 
-Embedding 是可选召回通道。简繁、完整拼音、日语读音、假名、罗马字和字符距离索引不依赖模型；先关闭 Embedding 完成播放链路验收，再按需要启用语义匹配。
+Embeddings are an optional retrieval channel. Simplified and Traditional Chinese, full Pinyin, Japanese pronunciations, kana, romanization, and character-distance indexing do not depend on a model. First validate the playback path with embeddings disabled, then enable semantic matching as needed.
 
-## 推荐模型
+## Recommended Models
 
-对于低功耗 Intel N5095 与 16 GB 内存，默认建议 **Qwen3-Embedding-0.6B**。官方模型支持多语言文本检索，并提供适合本地部署的 GGUF 版本。[1] [2]
+For a low-power Intel N5095 system with 16 GB of memory, **Qwen3-Embedding-0.6B** is the default recommendation. The official model supports multilingual text retrieval and has a GGUF release suitable for local deployment. [1] [2]
 
-| 方案 | 特点 | 建议用途 |
+| Option | Characteristics | Recommended use |
 |---|---|---|
-| 仅词法索引 | 占用最低、结果可解释、无外部服务 | 默认起点 |
-| Qwen3-Embedding-0.6B | 跨语言召回较强，模型规模适中 | N5095/16 GB 首选语义方案 |
-| multilingual-e5-small | 384 维、资源更低，但有固定前缀和 pooling 约定 | 资源更紧张时评估 |
-| BGE-M3 | 召回能力强，计算与内存成本更高 | 更强主机 |
+| Lexical index only | Lowest resource use, explainable results, and no external service | Default starting point |
+| Qwen3-Embedding-0.6B | Strong cross-language retrieval at a moderate model size | Preferred semantic option for N5095/16 GB |
+| multilingual-e5-small | 384 dimensions and lower resource use, with fixed prefix and pooling conventions | Evaluate when resources are more constrained |
+| BGE-M3 | Strong retrieval capability with higher compute and memory cost | More capable hosts |
 
-## 在 Home Assistant 中启用
+## Enable in Home Assistant
 
-进入 **设置 → 设备与服务 → XiaoAI Navidrome → 配置**，设置：
+Open **Settings → Devices & services → XiaoAI Navidrome → Configure** and set the following values.
 
-| 字段 | Ollama 建议值 |
+| Field | Recommended Ollama value |
 |---|---|
-| 启用语义匹配 | 开启 |
-| Embedding 服务类型 | `ollama` |
-| Embedding 服务地址 | `http://<OLLAMA_LAN_ADDRESS>:11434` |
-| Embedding 模型 | `qwen3-embedding:0.6b` |
-| Embedding API 密钥 | 留空 |
-| Embedding 分数权重 | `0.35` |
-| 语义自动播放最低分 | `0.60` |
-| 语义自动播放最小分差 | `0.05` |
+| Enable semantic matching | Enabled |
+| Embedding provider | `ollama` |
+| Embedding server URL | `http://<OLLAMA_LAN_ADDRESS>:11434` |
+| Embedding model | `qwen3-embedding:0.6b` |
+| Embedding API key | Leave blank |
+| Embedding score weight | `0.35` |
+| Semantic autoplay minimum score | `0.60` |
+| Semantic autoplay minimum margin | `0.05` |
 
-保存后 Config Entry 会重载。调用 `xiaoai_navidrome.sync_library` 或在 Panel 点击“同步曲库”，新索引会为尚无有效向量的曲目生成 embedding。模型名和曲目文档未变化时复用已有向量，不会因每次同步重新编码全部曲库。
+Saving reloads the Config Entry. Call `xiaoai_navidrome.sync_library` or select **Sync library** in the Panel. The new index generates embeddings for tracks that do not yet have valid vectors. Existing vectors are reused when the model name and track document are unchanged; the entire library is not re-encoded on every synchronization.
 
-Home Assistant 容器必须能访问填写的地址。Ollama 与 HA 在同一 Docker 主机但不在同一用户网络时，不要填写 `localhost`；应使用可从 Home Assistant 网络命名空间访问的主机地址或把两个容器加入同一 Docker 网络。
+The Home Assistant container must be able to access the configured address. If Ollama and Home Assistant run on the same Docker host but not on the same user-defined network, do not use `localhost`. Use a host address accessible from the Home Assistant network namespace, or add both containers to the same Docker network.
 
-## Ollama 准备
+## Ollama Setup
 
-先拉取模型：
+Pull the model first:
 
 ```bash
 ollama pull qwen3-embedding:0.6b
 ```
 
-验证 API：
+Verify the API:
 
 ```bash
 curl http://127.0.0.1:11434/api/embed \
@@ -48,11 +48,11 @@ curl http://127.0.0.1:11434/api/embed \
   -d '{"model":"qwen3-embedding:0.6b","input":["synthetic music query"]}'
 ```
 
-响应应包含 `embeddings` 数组。集成使用批量 `/api/embed`，每次 HTTP 响应有大小上限和超时；模型故障时保留可用词法索引，而不是让集成加载失败。
+The response should contain an `embeddings` array. The integration uses batched `/api/embed` requests, with a size limit and timeout for each HTTP response. If the model fails, the usable lexical index is retained rather than causing the integration to fail to load.
 
 ## Intel N5095 / Jasper Lake iGPU
 
-Ollama 的 Intel Vulkan 支持和实际性能取决于版本、驱动和模型。容器至少需要映射 `/dev/dri`，并允许访问 `renderD128`。可在现有 Ollama Compose 服务中加入：
+Ollama's Intel Vulkan support and actual performance depend on the version, driver, and model. The container must at least map `/dev/dri` and allow access to `renderD128`. Add the following to the existing Ollama Compose service:
 
 ```yaml
 services:
@@ -65,7 +65,7 @@ services:
       GGML_VK_VISIBLE_DEVICES: "0"
 ```
 
-宿主机 `/dev/dri/renderD128` 所属 GID 若不在容器用户附加组中，还需用 `group_add` 加入对应数字 GID。不要凭 `intel_gpu_top` 单次采样判断是否启用；结合 Ollama 日志和一次实际 embedding 请求检查：
+If the GID that owns host `/dev/dri/renderD128` is not among the container user's supplementary groups, add that numeric GID with `group_add`. Do not determine whether acceleration is enabled from a single `intel_gpu_top` sample. Check both Ollama logs and an actual embedding request:
 
 ```bash
 docker logs <ollama-container> 2>&1 | \
@@ -74,15 +74,15 @@ docker logs <ollama-container> 2>&1 | \
 docker exec <ollama-container> ollama ps
 ```
 
-成功路径通常会出现 Vulkan backend 或 offload 相关日志，并且不再提示丢弃集成 GPU。CPU 仍负责调度和部分算子，因此 GPU 工作时 CPU 不会降到零。
+A successful path commonly shows Vulkan-backend or offload-related logs and no longer reports that the integrated GPU was discarded. The CPU still handles scheduling and some operators, so CPU utilization will not fall to zero while the GPU is working.
 
-N5095 iGPU 规模较小，Vulkan 可能主要降低 CPU 峰值，而不一定缩短总耗时。首次全库同步完成后，日常查询只编码一条短文本；是否保留 GPU 应以查询延迟、整机功耗和稳定性实测决定。
+The N5095 iGPU is small. Vulkan may primarily reduce CPU peaks rather than total execution time. After the initial full-library synchronization, routine queries encode only one short text. Decide whether to retain GPU use through measured query latency, total-system power consumption, and stability.
 
-## OpenAI 兼容接口
+## OpenAI-Compatible Interface
 
-选择 `openai` provider 时，集成调用 `/v1/embeddings`，使用标准 `input` 与 `model` 字段，并在配置 API Key 后发送 bearer 认证。适用于 llama.cpp 或其他兼容服务器。
+With the `openai` provider, the integration calls `/v1/embeddings` using the standard `input` and `model` fields, and sends bearer authentication after an API key is configured. This is suitable for llama.cpp and other compatible servers.
 
-Qwen3 Embedding 通过 llama.cpp 部署时应按模型要求使用 embedding 模式和正确 pooling：
+When Qwen3 Embedding is deployed through llama.cpp, use embedding mode and the pooling method required by the model:
 
 ```bash
 llama-server \
@@ -93,32 +93,32 @@ llama-server \
   --port 8080
 ```
 
-Home Assistant 中配置：
+Configure Home Assistant as follows.
 
-| 字段 | 示例 |
+| Field | Example |
 |---|---|
-| Embedding 服务类型 | `openai` |
-| Embedding 服务地址 | `http://<SERVER_LAN_ADDRESS>:8080` |
-| Embedding 模型 | `Qwen3-Embedding-0.6B` |
-| API 密钥 | 仅服务器要求 bearer 认证时填写 |
+| Embedding provider | `openai` |
+| Embedding server URL | `http://<SERVER_LAN_ADDRESS>:8080` |
+| Embedding model | `Qwen3-Embedding-0.6B` |
+| Embedding API key | Enter a value only when the server requires bearer authentication |
 
-## 阈值说明
+## Thresholds
 
-Options Flow 暴露五个参数：
+The Options Flow exposes five parameters.
 
-| 参数 | 默认值 | 作用 |
+| Parameter | Default | Purpose |
 |---|---:|---|
-| 词法自动播放最低分 | `0.72` | 第一候选最低词法置信度 |
-| 词法自动播放最小分差 | `0.08` | 第一与第二候选最低差值 |
-| Embedding 分数权重 | `0.35` | 混合排序中语义通道权重 |
-| 语义自动播放最低分 | `0.60` | 纯语义自动播放最低余弦分 |
-| 语义自动播放最小分差 | `0.05` | 第一与其他语义候选最低差值 |
+| Lexical autoplay minimum score | `0.72` | Minimum lexical confidence for the first candidate |
+| Lexical autoplay minimum margin | `0.08` | Minimum difference between the first and second candidates |
+| Embedding score weight | `0.35` | Semantic-channel weight in hybrid ranking |
+| Semantic autoplay minimum score | `0.60` | Minimum cosine score for semantic-only autoplay |
+| Semantic autoplay minimum margin | `0.05` | Minimum difference between the first candidate and other semantic candidates |
 
-不要只为提高成功率而同时降低最低分和分差。合理方法是保留合成公开测试，使用不提交仓库的私有标注集统计错误自动播放率、拒绝率、Recall@1、MRR 和查询 p95，再小步调整。
+Do not lower both the minimum score and the score gap solely to increase the success rate. Retain synthetic public tests, use a private labeled set that is not committed to the repository, measure false-autoplay rate, rejection rate, Recall@1, MRR, and query p95, then make small adjustments.
 
-## 隐私与日志
+## Privacy and Logging
 
-索引保存在 Home Assistant `.storage`，包含曲目元数据和向量，因此应沿用 HA 配置目录的访问控制与备份策略。Embedding API 会接收结构化曲目元数据和用户当前查询；使用远端服务前需接受这一数据边界。本项目诊断与日志不输出完整查询、曲目列表、向量、密码或 API Key。
+The index is stored in Home Assistant `.storage` and contains track metadata and vectors. Apply the access controls and backup policy used for the Home Assistant configuration directory. The embedding API receives structured track metadata and the current user query; accept this data boundary before using a remote service. This project's diagnostics and logs do not emit complete queries, track lists, vectors, passwords, or API keys.
 
 ## References
 

@@ -33,29 +33,30 @@ def test_playlist_options_are_sorted_unique_and_hide_ids() -> None:
     )
 
     assert options == [
-        "播放歌单",
+        "play_playlist",
         "L" * 96,
         "Synthetic Mix",
         "Synthetic Mix (2)",
+        "Unnamed playlist",
         "Visible Label",
-        "未命名歌单",
     ]
     assert playlist_ids == {
-        "未命名歌单": "playlist-c",
         "L" * 96: "playlist-e",
         "Synthetic Mix": "playlist-a",
         "Synthetic Mix (2)": "playlist-b",
+        "Unnamed playlist": "playlist-c",
         "Visible Label": "playlist-d",
     }
     assert all("playlist-" not in option for option in options)
 
 
-def test_playlist_name_does_not_collide_with_idle_prompt() -> None:
-    """A playlist matching the prompt remains independently selectable."""
-    options, playlist_ids = _playlist_options([Playlist("playlist-one", "播放歌单")])
+@pytest.mark.parametrize("name", ["play_playlist", "Play playlist", "播放歌单"])
+def test_playlist_name_does_not_collide_with_idle_prompt(name: str) -> None:
+    """A playlist matching either translated prompt remains independently selectable."""
+    options, playlist_ids = _playlist_options([Playlist("playlist-one", name)])
 
-    assert options == ["播放歌单", "播放歌单 (2)"]
-    assert playlist_ids == {"播放歌单 (2)": "playlist-one"}
+    assert options == ["play_playlist", f"{name} (2)"]
+    assert playlist_ids == {f"{name} (2)": "playlist-one"}
 
 
 async def test_runtime_notifies_playlist_entities_only_when_choices_change() -> None:
@@ -143,7 +144,7 @@ async def test_playlist_select_plays_exact_choice_and_requires_admin(
         expected_revision=7,
         context=entity._context,
     )
-    assert entity.current_option == "播放歌单"
+    assert entity.current_option == "play_playlist"
     entity.async_write_ha_state.assert_called_once()
 
     regular = await hass.auth.async_create_user("synthetic-regular")
