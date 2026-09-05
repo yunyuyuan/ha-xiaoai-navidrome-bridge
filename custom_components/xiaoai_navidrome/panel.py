@@ -10,6 +10,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import (
+    DEFAULT_PANEL_LANGUAGE,
     DEFAULT_PANEL_TITLE,
     DOMAIN,
     PANEL_ELEMENT,
@@ -32,9 +33,20 @@ def normalize_panel_title(value: object) -> str:
     return " ".join(clean.split())[:40] or DEFAULT_PANEL_TITLE
 
 
-async def async_register_panel(hass: HomeAssistant, entry_id: str, title: object) -> None:
+def normalize_panel_language(value: object) -> str:
+    """Return one explicitly supported panel language."""
+    return "zh-Hans" if value == "zh-Hans" else DEFAULT_PANEL_LANGUAGE
+
+
+async def async_register_panel(
+    hass: HomeAssistant,
+    entry_id: str,
+    title: object,
+    language: object = DEFAULT_PANEL_LANGUAGE,
+) -> None:
     """Serve and register the XiaoAI Navidrome panel."""
     sidebar_title = normalize_panel_title(title)
+    panel_language = normalize_panel_language(language)
     domain_data = hass.data.setdefault(DOMAIN, {})
     if not domain_data.get("static_registered"):
         await hass.http.async_register_static_paths(
@@ -55,7 +67,7 @@ async def async_register_panel(hass: HomeAssistant, entry_id: str, title: object
         sidebar_title=sidebar_title,
         sidebar_icon="mdi:music-circle",
         module_url=f"{PANEL_STATIC_URL}/panel.js?v={VERSION}",
-        config={"entry_id": entry_id, "title": sidebar_title},
+        config={"entry_id": entry_id, "title": sidebar_title, "language": panel_language},
         require_admin=True,
         handle_safe_area=True,
     )

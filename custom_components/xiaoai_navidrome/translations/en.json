@@ -15,10 +15,11 @@
       },
       "playback": {
         "title": "Playback, sidebar, voice and matching",
-        "description": "Configure the sidebar panel and select a compatible XiaoAI media player. The conversation sensor is optional; when selected, voice phrases are handled without YAML automations.",
+        "description": "Configure the sidebar panel and select a compatible XiaoAI media player. Panel language defaults to English and can only be changed here. The conversation sensor is optional; when selected, voice phrases are handled without YAML automations.",
         "data": {
           "panel_enabled": "Show sidebar panel",
           "panel_title": "Sidebar and panel title",
+          "panel_language": "Panel language",
           "media_player": "Default XiaoAI media player",
           "conversation_sensor": "XiaoAI conversation sensor",
           "track_phrase": "Track command phrase",
@@ -72,10 +73,11 @@
     "step": {
       "init": {
         "title": "Playback, sidebar, voice and matching",
-        "description": "Rename or hide the sidebar panel and select a compatible media player. Hiding the panel does not stop voice commands or the background queue.",
+        "description": "Rename or hide the sidebar panel, change its language, and select a compatible media player. Panel language can only be changed here. Hiding the panel does not stop voice commands or the background queue.",
         "data": {
           "panel_enabled": "Show sidebar panel",
           "panel_title": "Sidebar and panel title",
+          "panel_language": "Panel language",
           "media_player": "Default XiaoAI media player",
           "conversation_sensor": "XiaoAI conversation sensor",
           "track_phrase": "Track command phrase",

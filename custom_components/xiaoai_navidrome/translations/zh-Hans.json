@@ -15,10 +15,11 @@
       },
       "playback": {
         "title": "播放、侧栏、语音和匹配",
-        "description": "配置侧栏面板并选择兼容的小爱播放设备。conversation 传感器为可选项；选择后，集成会直接处理语音口令，不再需要 YAML 自动化。",
+        "description": "配置侧栏面板并选择兼容的小爱播放设备。页面语言默认英语，且只能在这里修改。conversation 传感器为可选项；选择后，集成会直接处理语音口令，不再需要 YAML 自动化。",
         "data": {
           "panel_enabled": "显示侧栏面板",
           "panel_title": "侧栏和页面名称",
+          "panel_language": "页面语言",
           "media_player": "默认小爱播放设备",
           "conversation_sensor": "小爱 conversation 传感器",
           "track_phrase": "单曲口令",
@@ -72,10 +73,11 @@
     "step": {
       "init": {
         "title": "播放、侧栏、语音和匹配",
-        "description": "可在这里重命名或隐藏侧栏面板并选择播放设备。隐藏面板不会停止语音口令或后台队列。",
+        "description": "可在这里重命名或隐藏侧栏面板、修改页面语言并选择播放设备。页面语言只能在这里修改；隐藏面板不会停止语音口令或后台队列。",
         "data": {
           "panel_enabled": "显示侧栏面板",
           "panel_title": "侧栏和页面名称",
+          "panel_language": "页面语言",
           "media_player": "默认小爱播放设备",
           "conversation_sensor": "小爱 conversation 传感器",
           "track_phrase": "单曲口令",

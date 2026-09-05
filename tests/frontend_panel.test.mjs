@@ -11,18 +11,23 @@ const execFileAsync = promisify(execFile);
 const moduleUrl = new URL("../custom_components/xiaoai_navidrome/frontend/panel.js", import.meta.url);
 const {
   CoverStore,
+  PANEL_TEXT,
   RequestGate,
   XiaoAINavidromePanel,
+  clearSharedCoverStores,
   coverApiPath,
   coverClassNames,
   coverPixelSize,
   formatDuration,
   nextPlaybackMode,
+  normalizePanelLanguage,
+  panelText,
   playbackMode,
   queueStatus,
   rangeFillPercent,
   reconcilePendingVolume,
   responseItems,
+  sharedCoverStore,
   trackPrimaryCommand,
   voiceSafeText,
 } = await import(moduleUrl);
@@ -31,6 +36,16 @@ test("voiceSafeText removes control and directional characters while preserving 
   assert.equal(voiceSafeText("  Demo\u0000 Artist\u202e  \n"), "Demo Artist");
   assert.equal(voiceSafeText(null, "Untitled"), "Untitled");
   assert.equal(voiceSafeText("\t", "Untitled"), "Untitled");
+});
+
+test("panel text supports only English and Simplified Chinese with English as default", () => {
+  assert.deepEqual(Object.keys(PANEL_TEXT["zh-Hans"]).sort(), Object.keys(PANEL_TEXT.en).sort());
+  assert.equal(normalizePanelLanguage(undefined), "en");
+  assert.equal(normalizePanelLanguage("en"), "en");
+  assert.equal(normalizePanelLanguage("zh-Hans"), "zh-Hans");
+  assert.equal(normalizePanelLanguage("zh-CN"), "en");
+  assert.equal(panelText("en", "playTrack", { name: "Synthetic Track" }), "Play Synthetic Track");
+  assert.equal(panelText("zh-Hans", "playTrack", { name: "Synthetic Track" }), "播放 Synthetic Track");
 });
 
 test("playback mode cycles through sequence, shuffle, and repeat-one atomically", () => {
@@ -122,6 +137,41 @@ test("cover cache deduplicates one size while isolating higher-resolution varian
   assert.equal(store.peek("cover-one", 64), smallOne);
   assert.equal(store.peek("cover-one", 256), large);
   store.clear();
+});
+
+test("shared cover cache survives panel instance navigation and releases on page teardown", async () => {
+  const requests = [];
+  const hass = {
+    fetchWithAuth: async (path) => {
+      requests.push(path);
+      return {
+        ok: true,
+        status: 200,
+        blob: async () => new Blob(["synthetic-shared-image"], { type: "image/jpeg" }),
+      };
+    },
+  };
+  const firstOwner = { entryId: "entry-shared", hass };
+  const firstStore = sharedCoverStore(firstOwner);
+  const firstUrl = await firstStore.get("cover-shared", 96);
+  firstStore.release(firstOwner);
+
+  const secondOwner = { entryId: "entry-shared", hass };
+  const secondStore = sharedCoverStore(secondOwner);
+  const secondUrl = await secondStore.get("cover-shared", 96);
+  assert.equal(secondStore, firstStore);
+  assert.equal(secondUrl, firstUrl);
+  assert.equal(requests.length, 1);
+
+  const thirdStore = sharedCoverStore({ entryId: "entry-other", hass });
+  const thirdUrl = await thirdStore.get("cover-shared", 96);
+  assert.notEqual(thirdStore, firstStore);
+  assert.notEqual(thirdUrl, firstUrl);
+  assert.equal(requests.length, 2);
+
+  clearSharedCoverStores();
+  assert.equal(firstStore.closed, true);
+  assert.equal(thirdStore.closed, true);
 });
 
 test("panel accepts only the current WebSocket response shapes", () => {
@@ -429,7 +479,7 @@ test("panel defaults to playlists and exposes compact mobile playlist rows", asy
   assert.equal(source.includes('className: "track-primary"'), true);
   assert.equal(source.includes('className: "playlist-card"'), true);
   assert.equal(source.includes('this.libraryTab = "playlists"'), true);
-  assert.ok(source.indexOf('button("歌单"') < source.indexOf('button("曲目"'));
+  assert.ok(source.indexOf('button(this._t("playlists")') < source.indexOf('button(this._t("tracks")'));
   assert.equal(source.includes('className: "menu-button icon-button"'), true);
   assert.equal(source.includes('makeElement("h1", { text: this.panelTitle })'), true);
   assert.equal(source.includes('new CustomEvent("hass-toggle-menu"'), true);
@@ -667,19 +717,18 @@ const coversStable = panel.shadowRoot.querySelector(".disc-cover") === discCover
 const controlsStable = panel.shadowRoot.querySelector('[data-focus-key="player-previous"]') === previousBefore
   && panel.shadowRoot.querySelector('[data-focus-key="player-toggle"]') === toggleBefore
   && panel.shadowRoot.querySelector(".progress-range") === progressBefore;
-const statePatched = panel.shadowRoot.querySelector(".player-state")?.textContent === "准备播放"
+const statePatched = panel.shadowRoot.querySelector(".player-state")?.textContent === "Ready"
   && !panel.shadowRoot.querySelector(".disc")?.classList.contains("disc-spinning");
 panel.themeMode = "dark";
-panel.notice = { text: "Synthetic Notice", error: false };
+panel.notice = { key: "syncComplete", values: {}, error: false };
 panel._render();
+const noticeBefore = panel.shadowRoot.querySelector(".notice");
 const fullTreeStable = panel.shadowRoot.querySelector("main.panel") === mainBefore
   && panel.shadowRoot.querySelector(".library-pane") === libraryBefore
   && panel.shadowRoot.querySelector(".queue-pane") === queueBefore
   && panel.shadowRoot.querySelector(".disc-cover img") === discImageBefore
-  && panel.shadowRoot.querySelector(".notice")?.textContent.includes("Synthetic Notice")
+  && panel.shadowRoot.querySelector(".notice")?.textContent.includes("Library sync completed.")
   && mainBefore.dataset.theme === "dark";
-panel.notice = "";
-panel._render();
 progressBefore.blur();
 panel._applyQueue({ ...panel.queue, position: 20 });
 const settledRangePatched = progressBefore.value === "20"
@@ -697,9 +746,12 @@ const narrowNotSticky = getComputedStyle(queueBefore).position === "static";
 const mobilePlaylistCompact = desktopPlaylistCoverBefore !== null
   && panel.shadowRoot.querySelector(".playlist-cover") === null;
 panel.hass = { connection: {} };
-panel.panel = { config: { entry_id: "synthetic-entry", title: "Synthetic Music" } };
+panel.panel = { config: { entry_id: "synthetic-entry", title: "Synthetic Music", language: "zh-Hans" } };
 const haPropertiesStable = panel.shadowRoot.querySelector(".library-pane") === libraryBefore;
 const panelTitleWorks = panel.shadowRoot.querySelector("h1")?.textContent === "Synthetic Music";
+const panelLanguageWorks = panel.shadowRoot.querySelector(".tab")?.textContent === "歌单"
+  && panel.shadowRoot.querySelector(".notice") === noticeBefore
+  && panel.shadowRoot.querySelector(".notice")?.textContent.includes("曲库同步已完成。");
 let playlistCommand = null;
 let transportAction = null;
 panel._call = async (command, fields = {}) => {
@@ -734,7 +786,7 @@ const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" &&
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-card:playlist-one";
-document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && mobilePlaylistCompact && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};compact=\${mobilePlaylistCompact};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
+document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && mobilePlaylistCompact && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && panelLanguageWorks && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};compact=\${mobilePlaylistCompact};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};language=\${panelLanguageWorks};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

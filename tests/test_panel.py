@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, patch
 
 from custom_components.xiaoai_navidrome import async_setup_entry
 from custom_components.xiaoai_navidrome.const import DOMAIN
-from custom_components.xiaoai_navidrome.panel import async_register_panel, normalize_panel_title
+from custom_components.xiaoai_navidrome.panel import (
+    async_register_panel,
+    normalize_panel_language,
+    normalize_panel_title,
+)
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -15,9 +19,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 def test_panel_title_removes_controls_and_uses_a_bounded_default() -> None:
     """Sidebar titles cannot carry controls, direction overrides, or unbounded text."""
     assert normalize_panel_title("  Synthetic\u202e   Music\x00  ") == "Synthetic Music"
-    assert normalize_panel_title("\u202e\x00") == "小爱音乐"
-    assert normalize_panel_title(None) == "小爱音乐"
+    assert normalize_panel_title("\u202e\x00") == "XiaoAI Music"
+    assert normalize_panel_title(None) == "XiaoAI Music"
     assert len(normalize_panel_title("x" * 80)) == 40
+
+
+def test_panel_language_accepts_only_the_two_explicit_choices() -> None:
+    """Unknown or absent language values fall back to English."""
+    assert normalize_panel_language("zh-Hans") == "zh-Hans"
+    assert normalize_panel_language("en") == "en"
+    assert normalize_panel_language("zh-CN") == "en"
+    assert normalize_panel_language(None) == "en"
 
 
 async def test_panel_registration_uses_the_configured_title() -> None:
@@ -33,14 +45,23 @@ async def test_panel_registration_uses_the_configured_title() -> None:
             new=AsyncMock(),
         ) as register,
     ):
-        await async_register_panel(hass, "entry-one", "  Synthetic\u202e  Music  ")  # type: ignore[arg-type]
+        await async_register_panel(
+            hass,
+            "entry-one",
+            "  Synthetic\u202e  Music  ",
+            "zh-Hans",
+        )  # type: ignore[arg-type]
 
     hass.http.async_register_static_paths.assert_awaited_once()
     remove.assert_called_once()
     register.assert_awaited_once()
     kwargs = register.await_args.kwargs
     assert kwargs["sidebar_title"] == "Synthetic Music"
-    assert kwargs["config"] == {"entry_id": "entry-one", "title": "Synthetic Music"}
+    assert kwargs["config"] == {
+        "entry_id": "entry-one",
+        "title": "Synthetic Music",
+        "language": "zh-Hans",
+    }
 
 
 async def test_hidden_panel_does_not_block_runtime_setup(hass: HomeAssistant) -> None:
@@ -99,6 +120,7 @@ async def test_visible_panel_uses_the_configured_title(hass: HomeAssistant) -> N
             "media_player": "media_player.synthetic",
             "panel_enabled": True,
             "panel_title": "Synthetic Music",
+            "panel_language": "zh-Hans",
         },
     )
     entry.add_to_hass(hass)
@@ -120,4 +142,9 @@ async def test_visible_panel_uses_the_configured_title(hass: HomeAssistant) -> N
     ):
         assert await async_setup_entry(hass, entry)
 
-    register.assert_awaited_once_with(hass, entry.entry_id, "Synthetic Music")
+    register.assert_awaited_once_with(
+        hass,
+        entry.entry_id,
+        "Synthetic Music",
+        "zh-Hans",
+    )

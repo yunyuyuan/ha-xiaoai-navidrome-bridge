@@ -21,6 +21,7 @@ from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
+    SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     TextSelector,
@@ -44,6 +45,7 @@ from .const import (
     CONF_MEDIA_PLAYER,
     CONF_NAVIDROME_URL,
     CONF_PANEL_ENABLED,
+    CONF_PANEL_LANGUAGE,
     CONF_PANEL_TITLE,
     CONF_PASSWORD,
     CONF_PLAYLIST_GAP_SECONDS,
@@ -65,6 +67,7 @@ from .const import (
     DEFAULT_INDEX_REFRESH_MINUTES,
     DEFAULT_MAX_BIT_RATE,
     DEFAULT_PANEL_ENABLED,
+    DEFAULT_PANEL_LANGUAGE,
     DEFAULT_PANEL_TITLE,
     DEFAULT_PLAYLIST_GAP_SECONDS,
     DEFAULT_PLAYLIST_PHRASE,
@@ -84,9 +87,13 @@ from .navidrome import (
     NavidromeError,
     NavidromeProtocolError,
 )
-from .panel import normalize_panel_title
+from .panel import normalize_panel_language, normalize_panel_title
 
 _LOGGER = logging.getLogger(__name__)
+_PANEL_LANGUAGE_OPTIONS: list[SelectOptionDict] = [
+    {"value": "en", "label": "English"},
+    {"value": "zh-Hans", "label": "简体中文"},
+]
 
 
 def _log_validation_failure(stage: str, err: NavidromeError) -> None:
@@ -162,6 +169,14 @@ def _options_schema(defaults: Mapping[str, Any], *, allow_key_clear: bool = Fals
             CONF_PANEL_TITLE,
             default=defaults.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
         ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
+        vol.Required(
+            CONF_PANEL_LANGUAGE,
+            default=defaults.get(CONF_PANEL_LANGUAGE, DEFAULT_PANEL_LANGUAGE),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=_PANEL_LANGUAGE_OPTIONS,
+            )
+        ),
         vol.Required(
             CONF_MEDIA_PLAYER, default=defaults.get(CONF_MEDIA_PLAYER, "")
         ): EntitySelector(EntitySelectorConfig(domain="media_player")),
@@ -386,6 +401,7 @@ class XiaoAINavidromeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             values = dict(user_input)
             values[CONF_PANEL_ENABLED] = bool(values[CONF_PANEL_ENABLED])
             values[CONF_PANEL_TITLE] = normalize_panel_title(values[CONF_PANEL_TITLE])
+            values[CONF_PANEL_LANGUAGE] = normalize_panel_language(values.get(CONF_PANEL_LANGUAGE))
             values.pop(CONF_CLEAR_EMBEDDING_API_KEY, None)
             for optional in (
                 CONF_CONVERSATION_SENSOR,
@@ -492,6 +508,7 @@ class XiaoAINavidromeOptionsFlow(config_entries.OptionsFlow):
             values = dict(user_input)
             values[CONF_PANEL_ENABLED] = bool(values[CONF_PANEL_ENABLED])
             values[CONF_PANEL_TITLE] = normalize_panel_title(values[CONF_PANEL_TITLE])
+            values[CONF_PANEL_LANGUAGE] = normalize_panel_language(values.get(CONF_PANEL_LANGUAGE))
             clear_api_key = bool(values.pop(CONF_CLEAR_EMBEDDING_API_KEY, False))
             if clear_api_key:
                 values.pop(CONF_EMBEDDING_API_KEY, None)

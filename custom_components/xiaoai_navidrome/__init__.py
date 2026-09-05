@@ -11,8 +11,10 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     CONF_PANEL_ENABLED,
+    CONF_PANEL_LANGUAGE,
     CONF_PANEL_TITLE,
     DEFAULT_PANEL_ENABLED,
+    DEFAULT_PANEL_LANGUAGE,
     DEFAULT_PANEL_TITLE,
     DOMAIN,
 )
@@ -59,6 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: XiaoAINavidromeConfigEnt
                 hass,
                 entry.entry_id,
                 entry.options.get(CONF_PANEL_TITLE, DEFAULT_PANEL_TITLE),
+                entry.options.get(CONF_PANEL_LANGUAGE, DEFAULT_PANEL_LANGUAGE),
             )
     except Exception:
         await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

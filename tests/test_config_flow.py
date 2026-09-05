@@ -22,6 +22,7 @@ CONNECTION = {
 PLAYBACK = {
     "panel_enabled": True,
     "panel_title": "小爱音乐",
+    "panel_language": "en",
     "media_player": "media_player.synthetic_speaker",
     "track_phrase": "播放家庭音乐",
     "playlist_phrase": "播放家庭歌单",
@@ -58,6 +59,7 @@ async def test_user_flow_configures_connection_and_playback(hass: HomeAssistant)
     assert result["options"]["media_player"] == "media_player.synthetic_speaker"
     assert result["options"]["panel_enabled"] is True
     assert result["options"]["panel_title"] == "小爱音乐"
+    assert result["options"]["panel_language"] == "en"
     assert "media_player" not in result["data"]
     assert "home_assistant_token" not in result["data"]
 
@@ -187,12 +189,14 @@ async def test_options_can_rename_and_hide_the_sidebar_panel(hass: HomeAssistant
             **PLAYBACK,
             "panel_enabled": False,
             "panel_title": "  Synthetic\u202e   Music  ",
+            "panel_language": "zh-Hans",
         },
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"]["panel_enabled"] is False
     assert result["data"]["panel_title"] == "Synthetic Music"
+    assert result["data"]["panel_language"] == "zh-Hans"
 
 
 async def test_reconfigure_can_remove_public_share_url(hass: HomeAssistant) -> None:
