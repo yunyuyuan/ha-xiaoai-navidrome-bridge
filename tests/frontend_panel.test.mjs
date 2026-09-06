@@ -14,6 +14,7 @@ const {
   PANEL_TEXT,
   RequestGate,
   XiaoAINavidromePanel,
+  activeLyricLineIndex,
   clearSharedCoverStores,
   coverApiPath,
   coverClassNames,
@@ -21,6 +22,7 @@ const {
   formatDuration,
   nextPlaybackMode,
   normalizePanelLanguage,
+  normalizeLyricsResponse,
   panelText,
   playbackMode,
   queueStatus,
@@ -33,7 +35,7 @@ const {
 } = await import(moduleUrl);
 
 test("voiceSafeText removes control and directional characters while preserving readable synthetic metadata", () => {
-  assert.equal(voiceSafeText("  Demo\u0000 Artist\u202e  \n"), "Demo Artist");
+  assert.equal(voiceSafeText("  Demo\u0000\u061c Artist\u200f\u202e  \n"), "Demo Artist");
   assert.equal(voiceSafeText(null, "Untitled"), "Untitled");
   assert.equal(voiceSafeText("\t", "Untitled"), "Untitled");
 });
@@ -185,6 +187,184 @@ test("panel accepts only the current WebSocket response shapes", () => {
   assert.equal(queueStatus({ result: queue }), null);
 });
 
+test("structured lyrics are constrained and synchronized by millisecond timing", () => {
+  const lyrics = normalizeLyricsResponse({
+    track_id: "track-one",
+    state: "ready",
+    synced: true,
+    offset_ms: 250,
+    language: "eng",
+    lines: [
+      { value: " Second line ", start_ms: 2000 },
+      { value: "First\u0000 line", start_ms: 1000 },
+      { value: "Invalid timing", start_ms: -1 },
+    ],
+  }, "track-one");
+  assert.deepEqual(lyrics, {
+    track_id: "track-one",
+    state: "ready",
+    synced: true,
+    offset_ms: 250,
+    language: "eng",
+    lines: [
+      { value: "First line", start_ms: 1000 },
+      { value: "Second line", start_ms: 2000 },
+    ],
+  });
+  assert.equal(activeLyricLineIndex(lyrics, 0.5), -1);
+  assert.equal(activeLyricLineIndex(lyrics, 0.75), 0);
+  assert.equal(activeLyricLineIndex(lyrics, 1.75), 1);
+  assert.equal(activeLyricLineIndex({ ...lyrics, synced: false }, 30), -1);
+  assert.equal(normalizeLyricsResponse({ ...lyrics, track_id: "other" }, "track-one"), null);
+  assert.equal(
+    normalizeLyricsResponse({ track_id: "track-one", state: "ready", lines: [] }, "track-one").state,
+    "empty",
+  );
+  assert.equal(normalizeLyricsResponse({
+    track_id: "track-one",
+    state: "ready",
+    lines: [{ value: "x".repeat(4097) }],
+  }, "track-one"), null);
+});
+
+test("lyrics load only on demand, reuse cache, and ignore an obsolete track response", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let resolveFirst;
+  let calls = 0;
+  let firstSignal;
+  const firstPending = new Promise((resolve) => { resolveFirst = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    queue: {
+      items: [{ id: "track-one" }],
+      current: { id: "track-one" },
+      current_index: 0,
+      revision: 1,
+      state: "stopped",
+    },
+    lyricsOpen: false,
+    lyricsResult: null,
+    _lyricsCache: new Map(),
+    _activeLyricIndex: -1,
+    _lyricsManualScrollUntil: 0,
+    _lyricsGate: new RequestGate(),
+    _pendingVolume: null,
+    _volumeConfirmTimer: null,
+    _queueEpoch: 0,
+    _queueReceivedAt: Date.now(),
+    _seekPreview: null,
+    _renderQueueOnly: () => undefined,
+    _syncProgressTimer: () => undefined,
+    _syncActiveLyricLine: () => undefined,
+    shadowRoot: { querySelector: () => null },
+  });
+  panel._call = async (_command, fields, signal) => {
+    calls += 1;
+    if (fields.track_id === "track-one") {
+      firstSignal = signal;
+      return firstPending;
+    }
+    return {
+      track_id: "track-two",
+      state: "ready",
+      synced: false,
+      lines: [{ value: "Current lyric" }],
+    };
+  };
+
+  panel._toggleLyrics();
+  assert.equal(calls, 1);
+  panel._applyQueue({
+    ...panel.queue,
+    current: { id: "track-two" },
+    items: [{ id: "track-two" }],
+    revision: 2,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2);
+  assert.equal(firstSignal.aborted, true);
+  assert.equal(panel.lyricsResult.track_id, "track-two");
+
+  resolveFirst({
+    track_id: "track-one",
+    state: "ready",
+    synced: false,
+    lines: [{ value: "Obsolete lyric" }],
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(panel.lyricsResult.track_id, "track-two");
+  assert.equal(panel._lyricsCache.has("track-one"), false);
+
+  panel._toggleLyrics();
+  panel._toggleLyrics();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 2);
+  assert.equal(panel.lyricsResult.lines[0].value, "Current lyric");
+});
+
+test("lyrics cache is bounded LRU and access refreshes recency", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  panel._lyricsCache = new Map();
+  for (let index = 0; index <= 30; index += 1) {
+    panel._rememberLyrics({ track_id: `track-${index}`, state: "empty", lines: [] });
+  }
+  assert.equal(panel._lyricsCache.size, 30);
+  assert.equal(panel._lyricsCache.has("track-0"), false);
+  assert.equal(panel._cachedLyrics("track-1").track_id, "track-1");
+  panel._rememberLyrics({ track_id: "track-31", state: "empty", lines: [] });
+  assert.equal(panel._lyricsCache.has("track-1"), true);
+  assert.equal(panel._lyricsCache.has("track-2"), false);
+});
+
+test("synchronized lyrics center only their own container and honor manual scrolling", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const container = {
+    clientHeight: 200,
+    scrollTop: 50,
+    getBoundingClientRect: () => ({ top: 100 }),
+  };
+  const classes = new Set();
+  const attributes = new Map();
+  const active = {
+    classList: {
+      add: (value) => classes.add(value),
+      remove: (value) => classes.delete(value),
+    },
+    setAttribute: (name, value) => attributes.set(name, value),
+    removeAttribute: (name) => attributes.delete(name),
+    closest: () => container,
+    getBoundingClientRect: () => ({ top: 260, height: 20 }),
+  };
+  Object.assign(panel, {
+    lyricsOpen: true,
+    lyricsResult: {
+      track_id: "track-one",
+      state: "ready",
+      synced: true,
+      offset_ms: 0,
+      lines: [{ value: "First", start_ms: 0 }, { value: "Second", start_ms: 1000 }],
+    },
+    _activeLyricIndex: -1,
+    _lyricsManualScrollUntil: 0,
+    _displayPosition: () => 2,
+    shadowRoot: {
+      querySelector: (selector) => (selector === '[data-lyric-index="1"]' ? active : null),
+    },
+  });
+
+  panel._syncActiveLyricLine();
+  assert.equal(container.scrollTop, 120);
+  assert.equal(classes.has("is-active"), true);
+  assert.equal(attributes.get("aria-current"), "true");
+
+  container.scrollTop = 40;
+  panel._activeLyricIndex = -1;
+  panel._markLyricsManualScroll();
+  panel._syncActiveLyricLine();
+  assert.equal(container.scrollTop, 40);
+});
+
 test("RequestGate invalidates and aborts obsolete responses", () => {
   const gate = new RequestGate();
   const first = gate.begin();
@@ -205,7 +385,7 @@ test("disconnect during initialization starts a fresh connection immediately", a
   let libraryLoads = 0;
   let releaseLibrary;
   const libraryPending = new Promise((resolve) => { releaseLibrary = resolve; });
-  const gates = ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate"];
+  const gates = ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate", "_lyricsGate"];
   Object.assign(panel, {
     _connected: true,
     _hass: {},
@@ -219,6 +399,11 @@ test("disconnect during initialization starts a fresh connection immediately", a
     _progressTimer: null,
     _volumeConfirmTimer: null,
     _pendingVolume: null,
+    lyricsOpen: false,
+    lyricsResult: null,
+    _lyricsCache: new Map(),
+    _activeLyricIndex: -1,
+    _lyricsManualScrollUntil: 0,
     _queueEpoch: 0,
     _covers: { closed: false, clear() { this.closed = true; } },
     queue: { items: [], revision: 0 },
@@ -426,6 +611,11 @@ test("switching entries rejects a late command response and resets queue revisio
     playlistTrackOffset: 0,
     _playlistReturnFocusKey: "",
     detail: null,
+    lyricsOpen: true,
+    lyricsResult: { track_id: "track-a", state: "empty", lines: [] },
+    _lyricsCache: new Map([["track-a", { track_id: "track-a", state: "empty", lines: [] }]]),
+    _activeLyricIndex: -1,
+    _lyricsManualScrollUntil: 0,
     notice: "",
     _hass: { callWS: () => commandResponse },
     _setNotice: () => undefined,
@@ -433,7 +623,7 @@ test("switching entries rejects a late command response and resets queue revisio
     _syncProgressTimer: () => undefined,
     _start: () => Promise.resolve(true),
   });
-  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate"]) {
+  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate", "_lyricsGate"]) {
     panel[key] = new RequestGate();
   }
 
@@ -449,6 +639,9 @@ test("switching entries rejects a late command response and resets queue revisio
   assert.deepEqual(panel.queue.items, []);
   assert.deepEqual(panel.tracks, []);
   assert.deepEqual(panel.players, []);
+  assert.equal(panel.lyricsOpen, false);
+  assert.equal(panel.lyricsResult, null);
+  assert.equal(panel._lyricsCache.size, 0);
 });
 
 test("track primary targets select context-appropriate playback mutations", () => {
@@ -526,6 +719,8 @@ test("player uses a rotating disc, icon controls, ranges, and one mode button", 
   assert.equal(source.includes('className: "mode-button icon-button"'), true);
   assert.equal(source.includes('className: "progress-range"'), true);
   assert.equal(source.includes('className: "volume-range"'), true);
+  assert.equal(source.includes('iconButton("lyrics"'), true);
+  assert.equal(source.includes('className: "lyrics-view"'), true);
   assert.equal(source.includes('this._queueCommand("player_control"'), true);
   assert.equal(source.includes('className: "now-playing"'), false);
   assert.equal(source.includes("Material Design Icons 7.4.47"), true);
@@ -535,6 +730,8 @@ test("player uses a rotating disc, icon controls, ranges, and one mode button", 
   assert.doesNotMatch(css, /\.mode-button\[data-mode="one"\]::after/);
   assert.match(css, /::-webkit-slider-runnable-track/);
   assert.match(css, /--range-progress/);
+  assert.match(css, /\.lyrics-view \{ grid-column: 2; grid-row: 2;/);
+  assert.match(css, /:host\(\[narrow\]\) \.lyrics-view \{ grid-column: 1 \/ -1; grid-row: 2;/);
   assert.match(css, /\.transport-main:hover[^}]+background: var\(--x-primary\)/);
   assert.match(css, /prefers-reduced-motion:[^}]+animation: none/s);
 });
@@ -754,6 +951,7 @@ const panelLanguageWorks = panel.shadowRoot.querySelector(".tab")?.textContent =
   && panel.shadowRoot.querySelector(".notice")?.textContent.includes("曲库同步已完成。");
 let playlistCommand = null;
 let transportAction = null;
+let lyricsCalls = 0;
 panel._call = async (command, fields = {}) => {
   if (command === "playlist_tracks") return {
     items: [
@@ -762,10 +960,57 @@ panel._call = async (command, fields = {}) => {
     ],
     total: 2,
   };
+  if (command === "lyrics") {
+    lyricsCalls += 1;
+    return {
+      track_id: fields.track_id,
+      state: "ready",
+      synced: true,
+      offset_ms: 0,
+      language: "eng",
+      lines: [
+        { value: "Synthetic opening line", start_ms: 0 },
+        { value: "Synthetic active line", start_ms: 15000 },
+      ],
+    };
+  }
   if (command === "queue_playlist") playlistCommand = fields;
   if (command === "queue_control") transportAction = fields.action;
   return { ...panel.queue, revision: Number(panel.queue.revision || 0) + 1 };
 };
+const lyricsButton = panel.shadowRoot.querySelector(".lyrics-toggle");
+lyricsButton.focus();
+lyricsButton.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const lyricsShown = lyricsCalls === 1
+  && panel.shadowRoot.activeElement === lyricsButton
+  && panel.shadowRoot.querySelector(".lyrics-view") !== null
+  && panel.shadowRoot.querySelector('[data-lyric-index="1"]')?.classList.contains("is-active")
+  && panel.shadowRoot.querySelector(".library-pane") === libraryBefore
+  && panel.shadowRoot.querySelector(".queue-pane") === queueBefore
+  && panel.shadowRoot.querySelector(".disc-cover img") === discImageBefore;
+lyricsButton.click();
+lyricsButton.click();
+await new Promise((resolve) => setTimeout(resolve, 30));
+const lyricsCached = lyricsCalls === 1
+  && panel.shadowRoot.querySelector(".lyrics-view") !== null
+  && panel.shadowRoot.querySelector(".disc-cover img") === discImageBefore;
+const lyricsView = panel.shadowRoot.querySelector(".lyrics-view");
+lyricsView.dispatchEvent(new WheelEvent("wheel"));
+const manualLyricsScroll = panel._lyricsManualScrollUntil > Date.now();
+panel._renderQueueOnly();
+const activeLyricsPatched = panel.shadowRoot.querySelector('[data-lyric-index="1"]')?.classList.contains("is-active")
+  && panel.shadowRoot.querySelector('[data-lyric-index="1"]')?.getAttribute("aria-current") === "true";
+panel.lyricsResult = { track_id: "track-one", state: "empty", lines: [] };
+panel._renderQueueOnly();
+const emptyLyricsState = panel.shadowRoot.querySelector(".lyrics-message")?.textContent === "这首歌曲没有可用歌词。";
+panel.lyricsResult = { track_id: "track-one", state: "unsupported", lines: [] };
+panel._renderQueueOnly();
+const unsupportedLyricsState = panel.shadowRoot.querySelector(".lyrics-message")?.textContent.includes("不支持结构化歌词");
+panel.lyricsResult = { track_id: "track-one", state: "unavailable", lines: [] };
+panel._renderQueueOnly();
+const unavailableLyricsState = panel.shadowRoot.querySelector(".lyrics-retry")?.textContent === "重试";
+const lyricsStates = emptyLyricsState && unsupportedLyricsState && unavailableLyricsState;
 toggleBefore.click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const listenerPatched = transportAction === "play";
@@ -786,7 +1031,7 @@ const exactOccurrence = playlistCommand?.start_track_id === "track-duplicate" &&
 panel.shadowRoot.querySelector(".back").click();
 await new Promise((resolve) => setTimeout(resolve, 30));
 const returned = panel.shadowRoot.activeElement?.dataset.focusKey === "playlist-card:playlist-one";
-document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && mobilePlaylistCompact && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && panelLanguageWorks && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};compact=\${mobilePlaylistCompact};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};language=\${panelLanguageWorks};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
+document.body.dataset.focusResult = densityAwareCovers && desktopSticky && narrowNotSticky && mobileMenuWorks && mobilePlaylistCompact && localQueueRefresh && coversStable && controlsStable && activeRangeStable && settledRangePatched && statePatched && fullTreeStable && listenerPatched && haPropertiesStable && panelTitleWorks && panelLanguageWorks && lyricsShown && lyricsCached && manualLyricsScroll && activeLyricsPatched && lyricsStates && controlClickStable && playerControlPreserved && entered && exactOccurrence && returned ? "pass" : \`sizes=\${densityAwareCovers}:\${coverSizes.join("-")};sticky=\${desktopSticky};narrow-sticky=\${narrowNotSticky};menu=\${mobileMenuWorks};compact=\${mobilePlaylistCompact};local=\${localQueueRefresh};covers=\${coversStable};controls=\${controlsStable};range=\${activeRangeStable};settled=\${settledRangePatched};state=\${statePatched};tree=\${fullTreeStable};listener=\${listenerPatched};props=\${haPropertiesStable};title=\${panelTitleWorks};language=\${panelLanguageWorks};lyrics=\${lyricsShown}:\${lyricsCached}:\${manualLyricsScroll}:\${activeLyricsPatched}:\${lyricsStates};click=\${controlClickStable};control=\${playerControlPreserved};entered=\${entered};occurrence=\${exactOccurrence};returned=\${returned}\`;
 </script></body></html>`;
 
   try {

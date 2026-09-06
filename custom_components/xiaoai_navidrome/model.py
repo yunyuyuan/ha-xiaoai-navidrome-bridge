@@ -94,6 +94,44 @@ class Track:
 
 
 @dataclass(frozen=True, slots=True)
+class LyricLine:
+    """One bounded lyric line returned by OpenSubsonic."""
+
+    value: str
+    start_ms: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-ready lyric line without inventing timing data."""
+        result: dict[str, Any] = {"value": self.value}
+        if self.start_ms is not None:
+            result["start_ms"] = self.start_ms
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class Lyrics:
+    """A transient structured-lyrics result for one track."""
+
+    track_id: str
+    state: str = "empty"
+    synced: bool = False
+    offset_ms: int = 0
+    language: str = "und"
+    lines: tuple[LyricLine, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the constrained payload exposed to the Home Assistant Panel."""
+        return {
+            "track_id": self.track_id,
+            "state": self.state,
+            "synced": self.synced,
+            "offset_ms": self.offset_ms,
+            "language": self.language,
+            "lines": [line.to_dict() for line in self.lines],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Playlist:
     """A saved Navidrome playlist."""
 

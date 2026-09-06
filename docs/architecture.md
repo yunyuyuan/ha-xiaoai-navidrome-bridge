@@ -77,7 +77,9 @@ An event timestamp must not precede the current track's `started_at`. After ente
 
 The integration registers an administrator-visible Home Assistant sidebar Panel. The Home Assistant HTTP component serves static JavaScript and CSS. Data and commands use a custom WebSocket API and therefore inherit the Home Assistant login session. Every WebSocket command uses `require_admin`, and the artwork proxy also requires administrator access.
 
-The Panel does not store the Navidrome password, a Home Assistant token, or a separate Panel token. Track text is written through DOM `textContent`. Artwork is retrieved as a Blob through an authenticated Home Assistant request and displayed using a bounded object-URL cache.
+The Panel does not store the Navidrome password, a Home Assistant token, or a separate Panel token. Track and lyric text is written through DOM `textContent`. Artwork is retrieved as a Blob through an authenticated Home Assistant request and displayed using a bounded object-URL cache.
+
+Lyrics use a separate administrator-only WebSocket read. The backend discovers the OpenSubsonic `songLyrics` extension and requests structured lyrics by the exact current track ID only after the user opens the view. Lyrics have independent response and text limits, remain in a bounded browser-session cache, and never enter the track model, queue snapshot, index, or Home Assistant Store. Synchronized line highlighting uses the existing browser-side playback-position display and adds no polling or persistent connection. [7]
 
 ## Security Boundaries
 
@@ -87,7 +89,7 @@ The Panel does not store the Navidrome password, a Home Assistant token, or a se
 | Panel to Home Assistant | The existing Home Assistant login session, administrator WebSocket permissions, and administrator HTTP view. |
 | Speaker to Navidrome | Time-limited share URLs that contain neither query parameters nor account credentials. |
 | Persistent data | Home Assistant private `Store` with atomic writes; diagnostics exclude sensitive configuration and library contents. |
-| HTTP responses | JSON, M3U, artwork, and embeddings each have response-body limits and request timeouts. |
+| HTTP responses | JSON, M3U, artwork, lyrics, and embeddings each have response-body limits and request timeouts. |
 | Background tasks | Config Entry unload cancels and awaits tasks; exceptions do not prevent Home Assistant from shutting down. |
 
 A share URL is a temporary bearer capability: even without query parameters, any client that obtains the complete URL while it is valid can access the corresponding media. Use HTTPS, and do not expose logs or URLs in untrusted locations.
@@ -100,3 +102,4 @@ A share URL is a temporary bearer capability: even without query parameters, any
 [4]: https://developers.home-assistant.io/docs/config_entries_index/ "Home Assistant Config Entry lifecycle"
 [5]: https://developers.home-assistant.io/docs/integration_listen_events/ "Home Assistant event subscriptions"
 [6]: https://developers.home-assistant.io/docs/frontend/custom-ui/creating-custom-panels/ "Home Assistant custom panel development"
+[7]: https://opensubsonic.netlify.app/docs/endpoints/getlyricsbysongid/ "OpenSubsonic getLyricsBySongId structured lyrics endpoint"

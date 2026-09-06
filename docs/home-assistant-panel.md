@@ -17,7 +17,7 @@ This page is a native `panel_custom` registered by the integration, not a Lovela
 | Area | Function |
 |---|---|
 | Header status | Home Assistant sidebar menu on mobile, integration name, index synchronization status, and day/night/follow-system theme selection |
-| Player | Rotating CD, current track, progress, previous, play/pause, next, three-state playback mode, volume, and mute |
+| Player | Rotating CD, current track, on-demand structured lyrics, progress, previous, play/pause, next, three-state playback mode, volume, and mute |
 | Playback queue | Output player, selectable track queue, and an icon-only clear action |
 | Library | Playlist and track tabs, with playlists open by default; tracks support local-index pagination and search, and clicking the cover, title, or metadata area plays the track immediately |
 | Playlists | Navidrome playlist search; on desktop, click the entire cover card, and on mobile, click a compact list row without cover art to open the track list; click a playlist track’s main area to play the entire playlist beginning with that track |
@@ -79,6 +79,24 @@ The browser does not access a Navidrome URL containing Subsonic credentials dire
 
 All track, artist, album, and error text is written through DOM `textContent`; Navidrome metadata is not parsed as HTML.
 
+## Structured Lyrics
+
+The lyrics button next to the current-track information loads lyrics only after an administrator opens the view. The Panel sends the exact current track ID through an authenticated `xiaoai_navidrome/lyrics` WebSocket command. The integration discovers Navidrome's `songLyrics` capability and requests `getLyricsBySongId`; it does not search by title or artist. The result is an independent transient model and never becomes part of `Track`, the queue snapshot, or the queue Store. [11]
+
+The backend accepts only the structured main lyric track, prefers synchronized lyrics when Navidrome provides more than one candidate, and returns a constrained payload containing language, offset, synchronization state, and text lines. A dedicated response limit, maximum line count, maximum line length, and maximum total character count prevent unbounded Panel data. Control and bidirectional override characters are removed before the browser receives the text. The frontend validates the response again and renders every line through `textContent`.
+
+| Result | Panel behavior |
+|---|---|
+| Synchronized lines | The active line follows the locally smoothed Home Assistant playback position plus the OpenSubsonic millisecond offset. Only the changed line receives a DOM class update. |
+| Unsynchronized lines | All lines remain available as a static scrolling view without invented timing. |
+| No lyrics | The view displays an ordinary empty state; queue and playback remain unchanged. |
+| Capability unavailable | The view explains that the configured Navidrome server does not provide structured lyrics. |
+| Connection or protocol failure | The view offers a bounded retry without exposing upstream response details. |
+
+Successful, empty, and capability-unavailable results use a 30-item in-memory least-recently-used cache for the mounted Panel instance. A track change cancels the obsolete request and discards any late response before it can replace the current lyrics. No library prefetch, periodic request, or player polling is added. During synchronized playback, the existing one-second local progress display also updates the active lyric line; it does not contact Home Assistant or Navidrome. Manual pointer, touch, wheel, or keyboard interaction pauses automatic centering for five seconds. On desktop, the lyrics view occupies the column to the right of the rotating disc. Narrow and mobile layouts move it below the disc and current-track information at full width.
+
+Navidrome can read lyrics from embedded metadata and same-stem sidecar files according to `LyricsPriority`. A sidecar such as `Track.lrc` must be readable beside its corresponding audio file. [12]
+
 ## Theme
 
 The theme mode is stored in the browser’s local settings. The available modes are:
@@ -111,3 +129,5 @@ If multi-page operations produce a revision conflict, it is a safe rejection rat
 [8]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/layouts/home-assistant-main.ts "Home Assistant main layout sidebar event handling"
 [9]: https://github.com/home-assistant/frontend/blob/350fae410719663c18f72180d83cfeea542288f3/src/components/ha-menu-button.ts "Home Assistant menu button implementation"
 [10]: https://developers.home-assistant.io/docs/core/entity/select/ "Home Assistant Select entity"
+[11]: https://opensubsonic.netlify.app/docs/endpoints/getlyricsbysongid/ "OpenSubsonic getLyricsBySongId structured lyrics endpoint"
+[12]: https://www.navidrome.org/docs/usage/configuration/options/ "Navidrome LyricsPriority configuration"

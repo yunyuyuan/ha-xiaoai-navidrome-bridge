@@ -122,6 +122,17 @@ async def websocket_track(
 
 
 @websocket_api.require_admin
+@websocket_api.websocket_command(_schema("lyrics", {vol.Required("track_id"): _IDENTIFIER}))
+@websocket_api.async_response
+async def websocket_lyrics(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return bounded structured lyrics for one exact track."""
+    lyrics = await _runtime(hass, msg).navidrome.async_lyrics(msg["track_id"])
+    connection.send_result(msg["id"], lyrics.to_dict())
+
+
+@websocket_api.require_admin
 @websocket_api.websocket_command(_schema("media_players"))
 @websocket_api.async_response
 async def websocket_media_players(
@@ -370,6 +381,7 @@ def async_register_websocket_commands(hass: HomeAssistant) -> None:
         websocket_playlists,
         websocket_playlist_tracks,
         websocket_track,
+        websocket_lyrics,
         websocket_media_players,
         websocket_queue,
         websocket_subscribe_queue,

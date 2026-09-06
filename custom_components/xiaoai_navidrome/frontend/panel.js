@@ -8,6 +8,11 @@ const COVER_CONCURRENCY = 6;
 const COVER_DPR_LIMIT = 1.5;
 const COVER_SIZE_BUCKETS = Object.freeze([64, 96, 128, 160, 192, 256, 320, 384]);
 const VOLUME_CONFIRM_TIMEOUT = 10000;
+const LYRICS_CACHE_ITEMS = 30;
+const LYRICS_MANUAL_SCROLL_TIMEOUT = 5000;
+const LYRICS_MAX_LINES = 5000;
+const LYRICS_MAX_LINE_CHARS = 4096;
+const LYRICS_MAX_TEXT_CHARS = 512 * 1024;
 const STATIC_VERSION = new URL(import.meta.url).search;
 let stylesheetPromise;
 const EVENT_LISTENERS = Symbol("xiaoaiEventListeners");
@@ -28,6 +33,7 @@ export const PANEL_TEXT = Object.freeze({
     playlistsLoadFailed: "Unable to load playlists.",
     playlistTracksLoadFailed: "Unable to load playlist tracks.",
     trackDetailsLoadFailed: "Unable to load track details.",
+    lyricsLoadFailed: "Lyrics are temporarily unavailable.",
     queueConflict: "The queue changed elsewhere. The latest state has been loaded.",
     operationFailed: "The operation did not complete.",
     music: "Music",
@@ -68,6 +74,15 @@ export const PANEL_TEXT = Object.freeze({
     previousPage: "Previous page",
     nextPage: "Next page",
     playbackQueue: "Playback queue",
+    showLyrics: "Show lyrics",
+    hideLyrics: "Hide lyrics",
+    lyrics: "Lyrics",
+    lyricsForCurrentTrack: "Lyrics for the current track",
+    loadingLyrics: "Loading lyrics…",
+    noCurrentTrackForLyrics: "Play a track to view its lyrics.",
+    noLyrics: "No lyrics are available for this track.",
+    lyricsUnsupported: "This Navidrome server does not support structured lyrics.",
+    retryLyrics: "Retry",
     sequenceMode: "Sequence repeat",
     shuffleMode: "Shuffle",
     repeatOneMode: "Repeat one",
@@ -124,6 +139,7 @@ export const PANEL_TEXT = Object.freeze({
     playlistsLoadFailed: "无法读取歌单。",
     playlistTracksLoadFailed: "无法读取歌单曲目。",
     trackDetailsLoadFailed: "无法读取曲目详情。",
+    lyricsLoadFailed: "歌词暂时不可用。",
     queueConflict: "队列已在其他位置更新，已刷新最新状态。",
     operationFailed: "操作未完成。",
     music: "音乐",
@@ -164,6 +180,15 @@ export const PANEL_TEXT = Object.freeze({
     previousPage: "上一页",
     nextPage: "下一页",
     playbackQueue: "播放队列",
+    showLyrics: "显示歌词",
+    hideLyrics: "收起歌词",
+    lyrics: "歌词",
+    lyricsForCurrentTrack: "当前曲目歌词",
+    loadingLyrics: "正在加载歌词…",
+    noCurrentTrackForLyrics: "播放歌曲后可查看歌词。",
+    noLyrics: "这首歌曲没有可用歌词。",
+    lyricsUnsupported: "当前 Navidrome 服务器不支持结构化歌词。",
+    retryLyrics: "重试",
     sequenceMode: "顺序循环",
     shuffleMode: "随机播放",
     repeatOneMode: "单曲循环",
@@ -221,7 +246,7 @@ export function panelText(language, key, values = {}) {
 export function voiceSafeText(value, fallback = "") {
   const text = value === null || value === undefined ? "" : String(value);
   const clean = text
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   return clean || fallback;
@@ -353,6 +378,66 @@ export function queueStatus(response) {
     : null;
 }
 
+/** Constrain one backend lyrics payload before it reaches the render tree. */
+export function normalizeLyricsResponse(response, expectedTrackId) {
+  const trackId = String(response?.track_id || "");
+  if (!trackId || trackId !== String(expectedTrackId || "")) return null;
+  const state = String(response?.state || "");
+  if (!["ready", "empty", "unsupported"].includes(state)) return null;
+  const synced = state === "ready" && Boolean(response?.synced);
+  const lines = [];
+  let totalCharacters = 0;
+  if (state === "ready" && Array.isArray(response?.lines)) {
+    for (const source of response.lines) {
+      const value = voiceSafeText(source?.value);
+      if (!value) continue;
+      totalCharacters += value.length;
+      if (
+        value.length > LYRICS_MAX_LINE_CHARS
+        || totalCharacters > LYRICS_MAX_TEXT_CHARS
+        || lines.length >= LYRICS_MAX_LINES
+      ) return null;
+      if (!synced) {
+        lines.push({ value });
+        continue;
+      }
+      const startMs = Number(source?.start_ms);
+      if (!Number.isFinite(startMs) || startMs < 0) continue;
+      lines.push({ value, start_ms: Math.floor(startMs) });
+    }
+  }
+  if (synced) lines.sort((left, right) => left.start_ms - right.start_ms);
+  return {
+    track_id: trackId,
+    state: state === "ready" && !lines.length ? "empty" : state,
+    synced: synced && lines.length > 0,
+    offset_ms: Number.isFinite(Number(response?.offset_ms)) ? Math.trunc(Number(response.offset_ms)) : 0,
+    language: voiceSafeText(response?.language, "und").slice(0, 32),
+    lines,
+  };
+}
+
+/** Locate the current synchronized lyric line using OpenSubsonic millisecond timing. */
+export function activeLyricLineIndex(lyrics, positionSeconds) {
+  if (lyrics?.state !== "ready" || !lyrics.synced || !Array.isArray(lyrics.lines)) return -1;
+  const effectiveMs = Math.max(0, Number(positionSeconds) || 0) * 1000
+    + (Number(lyrics.offset_ms) || 0);
+  let low = 0;
+  let high = lyrics.lines.length - 1;
+  let active = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const start = Number(lyrics.lines[middle]?.start_ms);
+    if (Number.isFinite(start) && start <= effectiveMs) {
+      active = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return active;
+}
+
 /** Map a track's main click target to its context-specific playback mutation. */
 export function trackPrimaryCommand(context, trackId, playlistId = "", playlistIndex = -1) {
   const id = String(trackId || "");
@@ -396,7 +481,9 @@ function makeElement(tag, options = {}, children = []) {
   if (options.checked !== undefined) node.checked = Boolean(options.checked);
   if (options.placeholder) node.placeholder = voiceSafeText(options.placeholder);
   if (options.role) node.setAttribute("role", options.role);
+  if (options.dir) node.dir = options.dir;
   if (options.label) node.setAttribute("aria-label", voiceSafeText(options.label));
+  if (options.current !== undefined) node.setAttribute("aria-current", String(Boolean(options.current)));
   if (options.pressed !== undefined) node.setAttribute("aria-pressed", String(Boolean(options.pressed)));
   if (options.selectedState !== undefined) node.setAttribute("aria-selected", String(Boolean(options.selectedState)));
   if (options.tabIndex !== undefined) node.tabIndex = Number(options.tabIndex);
@@ -519,6 +606,7 @@ const ICON_PATHS = Object.freeze({
   one: "M13,15V9H12L10,10V11H11.5V15M17,17H7V14L3,18L7,22V19H19V13H17M7,7H17V10L21,6L17,2V5H5V11H7V7Z",
   volume: "M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z",
   muted: "M12,4L9.91,6.09L12,8.18M4.27,3L3,4.27L7.73,9H3V15H7L12,20V13.27L16.25,17.53C15.58,18.04 14.83,18.46 14,18.7V20.77C15.38,20.45 16.63,19.82 17.68,18.96L19.73,21L21,19.73L12,10.73M19,12C19,12.94 18.8,13.82 18.46,14.64L19.97,16.15C20.62,14.91 21,13.5 21,12C21,7.72 18,4.14 14,3.23V5.29C16.89,6.15 19,8.83 19,12M16.5,12C16.5,10.23 15.5,8.71 14,7.97V10.18L16.45,12.63C16.5,12.43 16.5,12.21 16.5,12Z",
+  lyrics: "M20,2A2,2 0 0,1 22,4V16A2,2 0 0,1 20,18H6L2,22V4C2,2.89 2.9,2 4,2H20M4,4V17.17L5.17,16H20V4H4M6,7H18V9H6V7M6,11H15V13H6V11Z",
   trash: "M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19M8,9H16V19H8V9M15.5,4L14.5,3H9.5L8.5,4H5V6H19V4H15.5Z",
 });
 
@@ -753,6 +841,12 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._playlistsGate = new RequestGate();
     this._playlistTracksGate = new RequestGate();
     this._detailGate = new RequestGate();
+    this._lyricsGate = new RequestGate();
+    this.lyricsOpen = false;
+    this.lyricsResult = null;
+    this._lyricsCache = new Map();
+    this._activeLyricIndex = -1;
+    this._lyricsManualScrollUntil = 0;
     this._unsubscribeQueue = null;
     this._commandChain = Promise.resolve();
     this._connectionController = new AbortController();
@@ -801,6 +895,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       this._playlistsGate.cancel();
       this._playlistTracksGate.cancel();
       this._detailGate.cancel();
+      this._lyricsGate.cancel();
       this._initializationSerial += 1;
       this._initializing = false;
       this._initializationPromise = null;
@@ -828,6 +923,11 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       this._playlistReturnFocusKey = "";
       this.libraryTab = "playlists";
       this.detail = null;
+      this.lyricsOpen = false;
+      this.lyricsResult = null;
+      this._lyricsCache.clear();
+      this._activeLyricIndex = -1;
+      this._lyricsManualScrollUntil = 0;
       this.notice = "";
       if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
       this._volumeConfirmTimer = null;
@@ -899,6 +999,12 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._playlistsGate.cancel();
     this._playlistTracksGate.cancel();
     this._detailGate.cancel();
+    this._lyricsGate.cancel();
+    this.lyricsOpen = false;
+    this.lyricsResult = null;
+    this._lyricsCache.clear();
+    this._activeLyricIndex = -1;
+    this._lyricsManualScrollUntil = 0;
     if (this._unsubscribeQueue) this._unsubscribeQueue();
     this._unsubscribeQueue = null;
     if (this._progressTimer) clearInterval(this._progressTimer);
@@ -1086,15 +1192,138 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     const nextTrackId = String(
       this.queue.current?.id || this.queue.items?.[nextIndex]?.id || "",
     );
-    if (previousIndex !== nextIndex || previousTrackId !== nextTrackId) {
+    const trackChanged = previousIndex !== nextIndex || previousTrackId !== nextTrackId;
+    if (trackChanged) {
       this._seekPreview = null;
       const progress = this.shadowRoot?.querySelector(".progress-range");
       if (progress) delete progress.dataset.localEditing;
+      this._lyricsGate.cancel();
+      this.lyricsResult = nextTrackId ? this._cachedLyrics(nextTrackId) : null;
+      this._activeLyricIndex = -1;
+      this._lyricsManualScrollUntil = 0;
     }
     this._queueEpoch += 1;
     this._queueReceivedAt = Date.now();
     this._renderQueueOnly();
     this._syncProgressTimer();
+    this._syncActiveLyricLine();
+    if (trackChanged && this.lyricsOpen && nextTrackId && !this.lyricsResult) {
+      void this._loadLyrics(nextTrackId);
+    }
+  }
+
+  _currentTrack() {
+    return this.queue.current || this.queue.items?.[this.queue.current_index] || null;
+  }
+
+  _cachedLyrics(trackId) {
+    const id = String(trackId || "");
+    const cached = id ? this._lyricsCache.get(id) : null;
+    if (!cached) return null;
+    this._lyricsCache.delete(id);
+    this._lyricsCache.set(id, cached);
+    return cached;
+  }
+
+  _rememberLyrics(lyrics) {
+    const trackId = String(lyrics?.track_id || "");
+    if (!trackId) return;
+    this._lyricsCache.delete(trackId);
+    this._lyricsCache.set(trackId, lyrics);
+    while (this._lyricsCache.size > LYRICS_CACHE_ITEMS) {
+      this._lyricsCache.delete(this._lyricsCache.keys().next().value);
+    }
+  }
+
+  _toggleLyrics() {
+    this.lyricsOpen = !this.lyricsOpen;
+    this._activeLyricIndex = -1;
+    if (!this.lyricsOpen) {
+      this._lyricsGate.cancel();
+      this._renderQueueOnly();
+      return;
+    }
+    const trackId = String(this._currentTrack()?.id || "");
+    this.lyricsResult = trackId ? this._cachedLyrics(trackId) : null;
+    this._renderQueueOnly();
+    if (trackId && !this.lyricsResult) void this._loadLyrics(trackId);
+    else this._syncActiveLyricLine();
+  }
+
+  async _loadLyrics(trackId, force = false) {
+    const requestedTrackId = String(trackId || "");
+    if (!this.lyricsOpen || !requestedTrackId || requestedTrackId !== String(this._currentTrack()?.id || "")) return;
+    if (!force) {
+      const cached = this._cachedLyrics(requestedTrackId);
+      if (cached) {
+        this.lyricsResult = cached;
+        this._renderQueueOnly();
+        this._syncActiveLyricLine();
+        return;
+      }
+    } else {
+      this._lyricsCache.delete(requestedTrackId);
+    }
+    const gate = this._lyricsGate.begin();
+    const requestedEntry = this.entryId;
+    this.lyricsResult = { track_id: requestedTrackId, state: "loading", lines: [] };
+    this._activeLyricIndex = -1;
+    this._renderQueueOnly();
+    try {
+      const response = await this._call("lyrics", { track_id: requestedTrackId }, gate.signal);
+      const lyrics = normalizeLyricsResponse(response, requestedTrackId);
+      if (!lyrics) throw new Error("Invalid lyrics response");
+      if (
+        !gate.isCurrent()
+        || !this._connected
+        || requestedEntry !== this.entryId
+        || requestedTrackId !== String(this._currentTrack()?.id || "")
+      ) return;
+      this._rememberLyrics(lyrics);
+      this.lyricsResult = lyrics;
+      this._activeLyricIndex = -1;
+      this._renderQueueOnly();
+      this._syncActiveLyricLine();
+    } catch (error) {
+      if (!isAbort(error) && gate.isCurrent() && requestedTrackId === String(this._currentTrack()?.id || "")) {
+        this.lyricsResult = { track_id: requestedTrackId, state: "unavailable", lines: [] };
+        this._activeLyricIndex = -1;
+        this._renderQueueOnly();
+      }
+    }
+  }
+
+  _syncActiveLyricLine() {
+    const lyrics = this.lyricsOpen ? this.lyricsResult : null;
+    const nextIndex = activeLyricLineIndex(lyrics, this._displayPosition());
+    if (nextIndex === this._activeLyricIndex) return;
+    const previous = this.shadowRoot?.querySelector(".lyric-line.is-active");
+    if (previous) {
+      previous.classList.remove("is-active");
+      previous.removeAttribute("aria-current");
+    }
+    this._activeLyricIndex = nextIndex;
+    if (nextIndex < 0) return;
+    const active = this.shadowRoot?.querySelector(`[data-lyric-index="${nextIndex}"]`);
+    if (!active) return;
+    active.classList.add("is-active");
+    active.setAttribute("aria-current", "true");
+    if (Date.now() >= this._lyricsManualScrollUntil) {
+      const container = active.closest?.(".lyrics-view");
+      if (container) {
+        const containerRect = container.getBoundingClientRect();
+        const activeRect = active.getBoundingClientRect();
+        const centeredTop = container.scrollTop
+          + activeRect.top
+          - containerRect.top
+          - ((container.clientHeight - activeRect.height) / 2);
+        container.scrollTop = Math.max(0, centeredTop);
+      }
+    }
+  }
+
+  _markLyricsManualScroll() {
+    this._lyricsManualScrollUntil = Date.now() + LYRICS_MANUAL_SCROLL_TIMEOUT;
   }
 
   async _loadTracks() {
@@ -1547,14 +1776,22 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       this._renderCover(current?.cover_art, current?.album || current?.title || this._t("music"), "disc-cover"),
       makeElement("span", { className: "disc-hole" }),
     ]);
-    const stage = makeElement("div", { className: "player-stage" }, [
-      disc,
-      makeElement("div", { className: "player-copy" }, [
-        makeElement("span", { className: "player-state", text: this._playerStateText() }),
-        makeElement("strong", { text: voiceSafeText(current?.title, this._t("chooseMusic")) }),
-        makeElement("span", { text: current ? voiceSafeText(current?.artist, this._t("unknownArtist")) : this._t("startFromLibrary") }),
-      ]),
+    const playerCopy = makeElement("div", { className: "player-copy" }, [
+      makeElement("span", { className: "player-state", text: this._playerStateText() }),
+      makeElement("strong", { text: voiceSafeText(current?.title, this._t("chooseMusic")) }),
+      makeElement("span", { text: current ? voiceSafeText(current?.artist, this._t("unknownArtist")) : this._t("startFromLibrary") }),
+      iconButton("lyrics", this._t(this.lyricsOpen ? "hideLyrics" : "showLyrics"), () => this._toggleLyrics(), {
+        className: "lyrics-toggle icon-button",
+        pressed: this.lyricsOpen,
+        dataset: { focusKey: "player-lyrics" },
+      }),
     ]);
+    const stageChildren = [
+      disc,
+      playerCopy,
+    ];
+    if (this.lyricsOpen) stageChildren.push(this._renderLyrics(current));
+    const stage = makeElement("div", { className: "player-stage" }, stageChildren);
     const progress = this._renderProgress(player, current);
     const volume = this._renderVolume(player);
     const playerCard = makeElement("section", { className: "player-card", label: this._t("musicControls") }, [stage, progress, controls, volume]);
@@ -1584,6 +1821,55 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     });
     pane.append(playerCard, playerSelector, heading, list);
     return pane;
+  }
+
+  _renderLyrics(current) {
+    const trackId = String(current?.id || "");
+    const result = this.lyricsResult?.track_id === trackId ? this.lyricsResult : null;
+    const content = [];
+    if (!trackId) {
+      content.push(makeElement("p", { className: "lyrics-message", text: this._t("noCurrentTrackForLyrics") }));
+    } else if (!result || result.state === "loading") {
+      content.push(makeElement("p", { className: "lyrics-message", text: this._t("loadingLyrics") }));
+    } else if (result.state === "empty") {
+      content.push(makeElement("p", { className: "lyrics-message", text: this._t("noLyrics") }));
+    } else if (result.state === "unsupported") {
+      content.push(makeElement("p", { className: "lyrics-message", text: this._t("lyricsUnsupported") }));
+    } else if (result.state === "unavailable") {
+      content.push(
+        makeElement("p", { className: "lyrics-message", text: this._t("lyricsLoadFailed") }),
+        button(this._t("retryLyrics"), () => this._loadLyrics(trackId, true), {
+          className: "lyrics-retry secondary",
+          dataset: { focusKey: "lyrics-retry" },
+        }),
+      );
+    } else {
+      const lines = makeElement("div", { className: "lyrics-lines", dir: "auto" });
+      for (const [index, line] of result.lines.entries()) {
+        const isActive = index === this._activeLyricIndex;
+        lines.append(makeElement("p", {
+          className: `lyric-line ${isActive ? "is-active" : ""}`,
+          text: line.value,
+          current: isActive ? true : undefined,
+          dataset: { lyricIndex: index },
+        }));
+      }
+      content.push(lines);
+    }
+    return makeElement("section", {
+      className: "lyrics-view",
+      label: this._t("lyricsForCurrentTrack"),
+      tabIndex: 0,
+      on: {
+        wheel: () => this._markLyricsManualScroll(),
+        touchstart: () => this._markLyricsManualScroll(),
+        pointerdown: () => this._markLyricsManualScroll(),
+        keydown: () => this._markLyricsManualScroll(),
+      },
+    }, [
+      makeElement("strong", { className: "lyrics-title", text: this._t("lyrics") }),
+      ...content,
+    ]);
   }
 
   _playerStateText() {
@@ -1624,16 +1910,19 @@ class XiaoAINavidromePanel extends HTMLElementBase {
           updateRangeFill(event.currentTarget);
           const elapsed = event.currentTarget.parentElement?.querySelector(".progress-elapsed");
           if (elapsed) elapsed.textContent = formatDuration(this._seekPreview);
+          this._syncActiveLyricLine();
         },
         change: (event) => {
           delete event.currentTarget.dataset.localEditing;
           const target = Number(event.currentTarget.value);
           this._seekPreview = null;
           this._queueCommand("player_control", { action: "seek", position: target });
+          this._syncActiveLyricLine();
         },
         blur: (event) => {
           delete event.currentTarget.dataset.localEditing;
           this._seekPreview = null;
+          this._syncActiveLyricLine();
         },
       },
     });
@@ -1728,6 +2017,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       updateRangeFill(range);
       const elapsed = this.shadowRoot?.querySelector(".progress-elapsed");
       if (elapsed) elapsed.textContent = formatDuration(position);
+      this._syncActiveLyricLine();
     }, 1000);
   }
 

@@ -13,7 +13,13 @@ import pytest
 from custom_components.xiaoai_navidrome import async_setup_entry
 from custom_components.xiaoai_navidrome.const import DOMAIN
 from custom_components.xiaoai_navidrome.diagnostics import async_get_config_entry_diagnostics
-from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Playlist, Track
+from custom_components.xiaoai_navidrome.model import (
+    LyricLine,
+    Lyrics,
+    NavidromeProtocolError,
+    Playlist,
+    Track,
+)
 from custom_components.xiaoai_navidrome.queue import PlaybackQueue
 from custom_components.xiaoai_navidrome.runtime import (
     XiaoAINavidromeRuntime,
@@ -25,7 +31,7 @@ from homeassistant.core import Context, HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import CLIENT_ID, MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 PLAYER = "media_player.synthetic_speaker"
@@ -130,6 +136,17 @@ async def test_setup_service_voice_and_player_state_sync(
             ),
         ),
         patch(
+            "custom_components.xiaoai_navidrome.navidrome.NavidromeClient.async_lyrics",
+            new=AsyncMock(
+                return_value=Lyrics(
+                    track_id="track-a",
+                    state="ready",
+                    synced=True,
+                    lines=(LyricLine("Synthetic lyric line", 1000),),
+                )
+            ),
+        ) as fetch_lyrics,
+        patch(
             "custom_components.xiaoai_navidrome.navidrome.NavidromeClient.async_create_stream_urls",
             new=AsyncMock(
                 side_effect=[
@@ -193,7 +210,43 @@ async def test_setup_service_voice_and_player_state_sync(
         assert players["result"]["items"][0]["supports_volume_set"] is True
         assert players["result"]["items"][0]["supports_volume_mute"] is True
 
+        await websocket.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/lyrics",
+                "entry_id": entry.entry_id,
+                "track_id": "track-a",
+            }
+        )
+        lyrics = await websocket.receive_json()
+        assert lyrics["success"]
+        assert lyrics["result"] == {
+            "track_id": "track-a",
+            "state": "ready",
+            "synced": True,
+            "offset_ms": 0,
+            "language": "und",
+            "lines": [{"value": "Synthetic lyric line", "start_ms": 1000}],
+        }
+        fetch_lyrics.assert_awaited_once_with("track-a")
+
         regular_user = await hass.auth.async_create_user("synthetic-regular-user")
+        regular_refresh_token = await hass.auth.async_create_refresh_token(
+            regular_user,
+            CLIENT_ID,
+        )
+        regular_access_token = hass.auth.async_create_access_token(regular_refresh_token)
+        regular_websocket = await hass_ws_client(hass, regular_access_token)
+        await regular_websocket.send_json_auto_id(
+            {
+                "type": f"{DOMAIN}/lyrics",
+                "entry_id": entry.entry_id,
+                "track_id": "track-a",
+            }
+        )
+        unauthorized_lyrics = await regular_websocket.receive_json()
+        assert not unauthorized_lyrics["success"]
+        assert unauthorized_lyrics["error"]["code"] == "unauthorized"
+        await regular_websocket.close()
         with pytest.raises(Unauthorized):
             await hass.services.async_call(
                 DOMAIN,

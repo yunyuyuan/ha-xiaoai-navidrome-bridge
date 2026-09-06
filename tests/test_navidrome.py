@@ -17,7 +17,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 pytest.importorskip("aiohttp")
 
-from custom_components.xiaoai_navidrome.model import NavidromeProtocolError, Track
+from custom_components.xiaoai_navidrome.model import (
+    LyricLine,
+    Lyrics,
+    NavidromeProtocolError,
+    Track,
+)
 from custom_components.xiaoai_navidrome.navidrome import NavidromeClient
 
 
@@ -155,6 +160,315 @@ def test_nullable_field_parsing_and_paging() -> None:
     assert tracks[0].size == 4096
     assert tracks[1].duration == 0
     assert len(session.requests) == 2
+
+
+def test_structured_lyrics_use_exact_track_id_and_prefer_synced_lines() -> None:
+    """Lyrics capability discovery is cached and synchronized main lyrics win."""
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [
+                            {"name": "songLyrics", "versions": ["1", 2]},
+                        ],
+                    }
+                }
+            )
+        assert path.endswith("/rest/getLyricsBySongId.view")
+        assert request["params"]["id"] == "track-lyrics"
+        assert "enhanced" not in request["params"]
+        return _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "lyricsList": {
+                        "structuredLyrics": [
+                            {
+                                "lang": "eng",
+                                "synced": False,
+                                "line": [{"value": "Static line"}],
+                            },
+                            {
+                                "kind": "translation",
+                                "lang": "eng",
+                                "synced": True,
+                                "line": [{"start": 500, "value": "Ignored translation"}],
+                            },
+                            {
+                                "kind": "main",
+                                "lang": "xxx",
+                                "offset": "125",
+                                "synced": "true",
+                                "line": [
+                                    {"start": "2000", "value": "Second line"},
+                                    {"start": 1500, "value": "Middle\u061c line\u200f"},
+                                    {"start": 1000, "value": " First\u0000 line\u202e "},
+                                    {"start": -1, "value": "Invalid timing"},
+                                ],
+                            },
+                        ]
+                    },
+                }
+            }
+        )
+
+    client, session = _client(responder)
+    lyrics = asyncio.run(client.async_lyrics("track-lyrics"))
+    repeated = asyncio.run(client.async_lyrics("track-lyrics"))
+
+    assert lyrics == Lyrics(
+        track_id="track-lyrics",
+        state="ready",
+        synced=True,
+        offset_ms=125,
+        language="und",
+        lines=(
+            LyricLine("First  line", 1000),
+            LyricLine("Middle  line", 1500),
+            LyricLine("Second line", 2000),
+        ),
+    )
+    assert repeated == lyrics
+    assert [urlsplit(request["url"]).path for request in session.requests].count(
+        "/library/rest/getOpenSubsonicExtensions.view"
+    ) == 1
+
+
+def test_lyrics_return_supported_empty_and_unsupported_states() -> None:
+    """A legal empty response differs from a server without songLyrics support."""
+
+    def empty_responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        payload: Mapping[str, Any]
+        if path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            payload = {
+                "subsonic-response": {
+                    "status": "ok",
+                    "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                }
+            }
+        else:
+            payload = {"subsonic-response": {"status": "ok", "lyricsList": {}}}
+        return _json_response(payload)
+
+    empty_client, empty_session = _client(empty_responder)
+    assert asyncio.run(empty_client.async_lyrics("track-empty")).to_dict() == {
+        "track_id": "track-empty",
+        "state": "empty",
+        "synced": False,
+        "offset_ms": 0,
+        "language": "und",
+        "lines": [],
+    }
+    assert len(empty_session.requests) == 2
+
+    unsupported_client, unsupported_session = _client(
+        lambda **_: _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "openSubsonicExtensions": [{"name": "other", "versions": [1]}],
+                }
+            }
+        )
+    )
+    assert asyncio.run(unsupported_client.async_lyrics("track-unsupported")).state == "unsupported"
+    assert len(unsupported_session.requests) == 1
+
+
+def test_lyrics_reject_malformed_structures_without_caching_unsupported() -> None:
+    """Malformed required containers remain retryable protocol errors."""
+    malformed_extensions_client, malformed_extensions_session = _client(
+        lambda **_: _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "openSubsonicExtensions": {"name": "songLyrics", "versions": [1]},
+                }
+            }
+        )
+    )
+    for _ in range(2):
+        with pytest.raises(NavidromeProtocolError, match="invalid extension list"):
+            asyncio.run(malformed_extensions_client.async_lyrics("track-malformed"))
+    assert len(malformed_extensions_session.requests) == 2
+
+    invalid_versions_client, _ = _client(
+        lambda **_: _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "openSubsonicExtensions": [{"name": "songLyrics", "versions": "invalid"}],
+                }
+            }
+        )
+    )
+    with pytest.raises(NavidromeProtocolError, match="invalid songLyrics versions"):
+        asyncio.run(invalid_versions_client.async_lyrics("track-malformed"))
+
+    def malformed_lyrics_responder(**request: Any) -> _Response:
+        if urlsplit(request["url"]).path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _json_response({"subsonic-response": {"status": "ok", "lyricsList": "invalid"}})
+
+    malformed_lyrics_client, _ = _client(malformed_lyrics_responder)
+    with pytest.raises(NavidromeProtocolError, match="does not contain lyricsList"):
+        asyncio.run(malformed_lyrics_client.async_lyrics("track-malformed"))
+
+    def malformed_structured_responder(**request: Any) -> _Response:
+        if urlsplit(request["url"]).path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "lyricsList": {"structuredLyrics": "invalid"},
+                }
+            }
+        )
+
+    malformed_structured_client, _ = _client(malformed_structured_responder)
+    with pytest.raises(NavidromeProtocolError, match="invalid structured lyrics"):
+        asyncio.run(malformed_structured_client.async_lyrics("track-malformed"))
+
+
+def test_concurrent_lyrics_requests_share_capability_discovery() -> None:
+    """Concurrent reads perform one extension discovery and independent lyric requests."""
+
+    def responder(**request: Any) -> _Response:
+        if urlsplit(request["url"]).path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _json_response({"subsonic-response": {"status": "ok", "lyricsList": {}}})
+
+    client, session = _client(responder)
+
+    async def fetch_both() -> tuple[Lyrics, Lyrics]:
+        first, second = await asyncio.gather(
+            client.async_lyrics("track-one"),
+            client.async_lyrics("track-two"),
+        )
+        return first, second
+
+    first, second = asyncio.run(fetch_both())
+    assert (first.track_id, second.track_id) == ("track-one", "track-two")
+    paths = [urlsplit(request["url"]).path for request in session.requests]
+    assert paths.count("/library/rest/getOpenSubsonicExtensions.view") == 1
+    assert paths.count("/library/rest/getLyricsBySongId.view") == 2
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        ([{"value": "x" * 1024}] * 513, "text exceeds"),
+        ([{"value": "x"}] * 5001, "too many lines"),
+    ],
+)
+def test_lyrics_reject_total_text_and_line_count_limits(
+    lines: list[dict[str, str]], message: str
+) -> None:
+    """Structured lyrics remain bounded even when every individual line is small."""
+
+    def responder(**request: Any) -> _Response:
+        if urlsplit(request["url"]).path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "lyricsList": {"structuredLyrics": {"synced": False, "line": lines}},
+                }
+            }
+        )
+
+    client, _ = _client(responder)
+    with pytest.raises(NavidromeProtocolError, match=message):
+        asyncio.run(client.async_lyrics("track-bounded"))
+
+
+def test_lyrics_use_dedicated_response_body_limit() -> None:
+    """Lyrics endpoints cannot consume the general-purpose JSON response allowance."""
+
+    def responder(**request: Any) -> _Response:
+        if urlsplit(request["url"]).path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _Response(200, b"x" * (1024 * 1024 + 1))
+
+    client, _ = _client(responder)
+    with pytest.raises(NavidromeProtocolError, match="1048576 byte limit"):
+        asyncio.run(client.async_lyrics("track-large-response"))
+
+
+def test_lyrics_reject_excessive_text_and_stay_out_of_track_storage() -> None:
+    """Untrusted lyrics are bounded and never alter the persistent Track shape."""
+
+    def responder(**request: Any) -> _Response:
+        path = urlsplit(request["url"]).path
+        if path.endswith("/rest/getOpenSubsonicExtensions.view"):
+            return _json_response(
+                {
+                    "subsonic-response": {
+                        "status": "ok",
+                        "openSubsonicExtensions": [{"name": "songLyrics", "versions": [1]}],
+                    }
+                }
+            )
+        return _json_response(
+            {
+                "subsonic-response": {
+                    "status": "ok",
+                    "lyricsList": {
+                        "structuredLyrics": {
+                            "synced": False,
+                            "line": {"value": "x" * 4097},
+                        }
+                    },
+                }
+            }
+        )
+
+    client, _ = _client(responder)
+    with pytest.raises(NavidromeProtocolError, match="excessively long line"):
+        asyncio.run(client.async_lyrics("track-large"))
+    assert "lyrics" not in Track("track-storage").to_dict()
 
 
 def test_native_login_create_and_m3u() -> None:

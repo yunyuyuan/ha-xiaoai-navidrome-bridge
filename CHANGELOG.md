@@ -2,6 +2,17 @@
 
 All significant changes are documented in this file. Version tags follow Semantic Versioning.
 
+## [1.0.14] - 2026-09-06
+
+### Added
+
+- The native Panel can load structured lyrics for the exact current Navidrome track on demand. Synchronized lyrics follow the Home Assistant playback position with line-level highlighting, while unsynchronized lyrics remain available as a static reading view.
+- The rotating-disc area now includes an accessible lyrics toggle with English and Simplified Chinese states, responsive desktop/mobile placement, explicit empty and unavailable states, retry handling, and a bounded in-memory cache.
+
+### Security
+
+- Lyrics remain outside track and queue persistence, pass through the administrator-only Home Assistant WebSocket API, and are normalized under response-size, line-count, line-length, and total-text limits before text-only rendering.
+
 ## [1.0.13] - 2026-09-06
 
 ### Changed

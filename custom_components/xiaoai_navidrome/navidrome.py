@@ -11,6 +11,7 @@ import asyncio
 import json
 import posixpath
 import secrets
+import unicodedata
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,8 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 import aiohttp
 
 from .model import (
+    LyricLine,
+    Lyrics,
     NavidromeAuthError,
     NavidromeConnectionError,
     NavidromeError,
@@ -32,9 +35,16 @@ from .model import (
 _JSON_LIMIT: Final = 32 * 1024 * 1024
 _IMAGE_LIMIT: Final = 8 * 1024 * 1024
 _M3U_LIMIT: Final = 4 * 1024 * 1024
+_LYRICS_LIMIT: Final = 1024 * 1024
+_LYRICS_MAX_LINES: Final = 5000
+_LYRICS_MAX_LINE_CHARS: Final = 4096
+_LYRICS_MAX_TEXT_CHARS: Final = 512 * 1024
 _SUBSONIC_VERSION: Final = "1.16.1"
 _SUBSONIC_CLIENT: Final = "xiaoai-navidrome"
 _AUTH_ERROR_CODES: Final = frozenset({40, 41, 44})
+_BIDI_CONTROL_CHARACTERS: Final = frozenset(
+    "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+)
 _HTTP_OK: Final = 200
 _HTTP_REDIRECT: Final = 300
 _HTTP_UNAUTHORIZED: Final = 401
@@ -87,6 +97,8 @@ class NavidromeClient:
         # A stable per-client UUID-like identifier is required by Navidrome shares.
         self._client_unique_id = secrets.token_hex(16)
         self._native_token: str | None = None
+        self._song_lyrics_versions: frozenset[int] | None = None
+        self._extensions_lock = asyncio.Lock()
 
     @property
     def client_unique_id(self) -> str:
@@ -215,13 +227,15 @@ class NavidromeClient:
         self,
         endpoint: str,
         params: Mapping[str, str | int] | None = None,
+        *,
+        limit: int = _JSON_LIMIT,
     ) -> Mapping[str, Any]:
         """Call a Subsonic endpoint and validate its protocol-level status."""
         request_params = self._subsonic_auth_params()
         if params:
             request_params.update({key: str(value) for key, value in params.items()})
         _, body = await self._request_bytes(
-            "GET", f"rest/{endpoint}.view", params=request_params, limit=_JSON_LIMIT
+            "GET", f"rest/{endpoint}.view", params=request_params, limit=limit
         )
         envelope = self._json_object(body, endpoint)
         root = envelope.get("subsonic-response", envelope.get("subsonicResponse"))
@@ -327,6 +341,75 @@ class NavidromeClient:
         return tracks[0]
 
     async_track = track
+
+    async def _async_song_lyrics_versions(self) -> frozenset[int]:
+        """Discover and cache the current OpenSubsonic songLyrics versions."""
+        cached = self._song_lyrics_versions
+        if cached is not None:
+            return cached
+        async with self._extensions_lock:
+            cached = self._song_lyrics_versions
+            if cached is not None:
+                return cached
+            root = await self._subsonic_request("getOpenSubsonicExtensions", limit=_LYRICS_LIMIT)
+            raw_extensions = root.get("openSubsonicExtensions")
+            if not isinstance(raw_extensions, list) or any(
+                not isinstance(extension, Mapping) for extension in raw_extensions
+            ):
+                raise NavidromeProtocolError(
+                    "getOpenSubsonicExtensions returned an invalid extension list"
+                )
+            versions: set[int] = set()
+            for extension in raw_extensions:
+                if self._as_text(extension.get("name")).casefold() != "songlyrics":
+                    continue
+                raw_versions = extension.get("versions")
+                if not isinstance(raw_versions, list):
+                    raise NavidromeProtocolError(
+                        "getOpenSubsonicExtensions returned invalid songLyrics versions"
+                    )
+                extension_versions = {
+                    version
+                    for value in raw_versions
+                    if (version := self._as_int(value)) is not None and version > 0
+                }
+                if not extension_versions:
+                    raise NavidromeProtocolError(
+                        "getOpenSubsonicExtensions returned invalid songLyrics versions"
+                    )
+                versions.update(extension_versions)
+            cached = frozenset(versions)
+            self._song_lyrics_versions = cached
+            return cached
+
+    async def lyrics(self, track_id: str) -> Lyrics:
+        """Return bounded structured lyrics for one exact Navidrome track."""
+        normalized_id = self._as_text(track_id)
+        if not normalized_id:
+            raise ValueError("track_id must not be empty")
+        versions = await self._async_song_lyrics_versions()
+        if not any(version >= 1 for version in versions):
+            return Lyrics(track_id=normalized_id, state="unsupported")
+        root = await self._subsonic_request(
+            "getLyricsBySongId",
+            {"id": normalized_id},
+            limit=_LYRICS_LIMIT,
+        )
+        container = root.get("lyricsList")
+        if not isinstance(container, Mapping):
+            raise NavidromeProtocolError("getLyricsBySongId response does not contain lyricsList")
+        if "structuredLyrics" not in container:
+            return Lyrics(track_id=normalized_id)
+        value = container.get("structuredLyrics")
+        if not isinstance(value, (Mapping, list)) or (
+            isinstance(value, list) and any(not isinstance(item, Mapping) for item in value)
+        ):
+            raise NavidromeProtocolError(
+                "getLyricsBySongId response contains invalid structured lyrics"
+            )
+        return self._lyrics_from_value(normalized_id, value)
+
+    async_lyrics = lyrics
 
     async def cover_art(self, cover_art_id: str, size: int = 600) -> bytes:
         """Fetch bounded cover-art bytes from Subsonic's ``getCoverArt`` endpoint."""
@@ -718,6 +801,67 @@ class NavidromeClient:
         if isinstance(value, list):
             return [item for item in value if isinstance(item, Mapping)]
         return []
+
+    @staticmethod
+    def _lyric_text(value: Any) -> str:
+        """Normalize one lyric line while removing control and bidi override characters."""
+        if value is None or isinstance(value, (Mapping, list, tuple, set, bytes, bytearray)):
+            return ""
+        text = str(value)
+        clean = "".join(
+            " "
+            if unicodedata.category(character) == "Cc" or character in _BIDI_CONTROL_CHARACTERS
+            else character
+            for character in text
+        ).strip()
+        if len(clean) > _LYRICS_MAX_LINE_CHARS:
+            raise NavidromeProtocolError("lyrics contain an excessively long line")
+        return clean
+
+    @classmethod
+    def _lyrics_from_value(cls, track_id: str, value: Any) -> Lyrics:
+        """Select one valid main lyric track, preferring synchronized lines."""
+        candidates: list[Lyrics] = []
+        for item in cls._items(value):
+            kind = cls._as_text(item.get("kind")).casefold()
+            if kind not in {"", "main"}:
+                continue
+            synced = cls._as_bool(item.get("synced"))
+            lines: list[LyricLine] = []
+            total_characters = 0
+            for raw_line in cls._items(item.get("line")):
+                text = cls._lyric_text(raw_line.get("value"))
+                if not text:
+                    continue
+                start_ms = cls._as_int(raw_line.get("start")) if synced else None
+                if synced and (start_ms is None or start_ms < 0):
+                    continue
+                total_characters += len(text)
+                if total_characters > _LYRICS_MAX_TEXT_CHARS:
+                    raise NavidromeProtocolError("lyrics text exceeds the supported size")
+                lines.append(LyricLine(value=text, start_ms=start_ms))
+                if len(lines) > _LYRICS_MAX_LINES:
+                    raise NavidromeProtocolError("lyrics contain too many lines")
+            if not lines:
+                continue
+            if synced:
+                lines.sort(key=lambda line: line.start_ms if line.start_ms is not None else -1)
+            language = cls._as_text(item.get("lang")) or "und"
+            if language.casefold() == "xxx":
+                language = "und"
+            candidates.append(
+                Lyrics(
+                    track_id=track_id,
+                    state="ready",
+                    synced=synced,
+                    offset_ms=cls._as_int(item.get("offset")) or 0,
+                    language=language[:32],
+                    lines=tuple(lines),
+                )
+            )
+        if not candidates:
+            return Lyrics(track_id=track_id)
+        return next((candidate for candidate in candidates if candidate.synced), candidates[0])
 
     @classmethod
     def _tracks_from_value(cls, value: Any) -> list[Track]:
