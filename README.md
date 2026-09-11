@@ -8,6 +8,8 @@
 
 Home Assistant directly manages configuration, indexing, the queue, voice events, and player-state synchronization. **No standalone service container, long-lived Home Assistant access token, REST YAML, or additional reverse-proxy route is required.** The integration uses Navidrome's native time-limited shared streams to send public audio URLs without query parameters or Subsonic credentials to the speaker. Navidrome v0.63.2 provides the public `/share/s/<signed-id>` stream and Range handling.[1] [2]
 
+![](https://r2-blog.yunyuyuan.net/2026-09-06-fbee46f9.png)
+
 ## Features
 
 | Capability | Implementation |
