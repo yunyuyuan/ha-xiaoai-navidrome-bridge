@@ -2,6 +2,14 @@
 
 All significant changes are documented in this file. Version tags follow Semantic Versioning.
 
+## [1.0.15] - 2026-09-27
+
+### Fixed
+
+- A failed Panel mutation now reads the latest queue state immediately. If that read or the bounded queue-subscription handshake fails, the Panel invalidates the stale frontend session, creates a new request generation, and reloads configuration, player capabilities, the queue snapshot, and the live subscription. Initial and recovery initialization waits are also bounded and remain retryable.
+- Returning to a retained Panel through browser visibility, page-show, mobile-app resume, or Home Assistant route changes now performs one coalesced state validation. Mutating commands are never replayed automatically, preventing an uncertain response from applying the same action twice.
+- Recovery tasks, queued operations, and queue-subscription callbacks are isolated by connection and Panel lifecycle generations so work from a page that was left cannot modify a newly attached page.
+
 ## [1.0.14] - 2026-09-06
 
 ### Added

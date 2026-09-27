@@ -13,6 +13,10 @@ const LYRICS_MANUAL_SCROLL_TIMEOUT = 5000;
 const LYRICS_MAX_LINES = 5000;
 const LYRICS_MAX_LINE_CHARS = 4096;
 const LYRICS_MAX_TEXT_CHARS = 512 * 1024;
+const QUEUE_SUBSCRIPTION_TIMEOUT = 3000;
+const RECOVERY_REQUEST_TIMEOUT = 3000;
+const SESSION_INITIALIZATION_TIMEOUT = 5000;
+const PAGE_RESUME_VALIDATION_INTERVAL = 1000;
 const STATIC_VERSION = new URL(import.meta.url).search;
 let stylesheetPromise;
 const EVENT_LISTENERS = Symbol("xiaoaiEventListeners");
@@ -35,6 +39,8 @@ export const PANEL_TEXT = Object.freeze({
     trackDetailsLoadFailed: "Unable to load track details.",
     lyricsLoadFailed: "Lyrics are temporarily unavailable.",
     queueConflict: "The queue changed elsewhere. The latest state has been loaded.",
+    operationStateRefreshed: "The operation could not be confirmed. The latest state has been loaded.",
+    connectionRestored: "The connection was restored. Try the operation again.",
     operationFailed: "The operation did not complete.",
     music: "Music",
     coverLabel: "{name} cover",
@@ -141,6 +147,8 @@ export const PANEL_TEXT = Object.freeze({
     trackDetailsLoadFailed: "无法读取曲目详情。",
     lyricsLoadFailed: "歌词暂时不可用。",
     queueConflict: "队列已在其他位置更新，已刷新最新状态。",
+    operationStateRefreshed: "未能确认操作结果，已刷新最新状态。",
+    connectionRestored: "连接已恢复，请重试操作。",
     operationFailed: "操作未完成。",
     music: "音乐",
     coverLabel: "{name}封面",
@@ -348,16 +356,20 @@ export function coverClassNames(className = "") {
 function abortable(promise, signal) {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => {
-      signal.addEventListener(
-        "abort",
-        () => reject(new DOMException("Aborted", "AbortError")),
-        { once: true },
-      );
-    }),
-  ]);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function isAbort(error) {
@@ -848,8 +860,10 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._activeLyricIndex = -1;
     this._lyricsManualScrollUntil = 0;
     this._unsubscribeQueue = null;
+    this._subscriptionGeneration = 0;
     this._commandChain = Promise.resolve();
     this._connectionController = new AbortController();
+    this._lifecycleGeneration = 0;
     this._queueEpoch = 0;
     this._queueReceivedAt = Date.now();
     this._progressTimer = null;
@@ -860,6 +874,9 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._initializing = false;
     this._initializationSerial = 0;
     this._initializationPromise = null;
+    this._recoveryPromise = null;
+    this._lastResumeValidationAt = 0;
+    this._handlePageResume = this._handlePageResume.bind(this);
     this._covers = new CoverStore(this);
     this._render();
   }
@@ -889,6 +906,8 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this.panelTitle = nextTitle;
     if (nextEntry !== this.entryId) {
       this.entryId = nextEntry;
+      this._lifecycleGeneration += 1;
+      this._recoveryPromise = null;
       this._initializedEntry = "";
       this._initGate.cancel();
       this._tracksGate.cancel();
@@ -934,8 +953,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       this._pendingVolume = null;
       this._covers?.release?.(this);
       this._covers = sharedCoverStore(this);
-      if (this._unsubscribeQueue) this._unsubscribeQueue();
-      this._unsubscribeQueue = null;
+      this._releaseQueueSubscription();
       if (this._connected) this._start();
     } else if ((titleChanged || languageChanged) && this._connected) this._render();
   }
@@ -959,7 +977,11 @@ class XiaoAINavidromePanel extends HTMLElementBase {
   }
 
   set route(value) {
+    const previous = this._route;
     this._route = value;
+    const previousPath = String(previous?.path || previous || "");
+    const nextPath = String(value?.path || value || "");
+    if (this._connected && previous !== null && previousPath !== nextPath) this._handlePageResume();
   }
 
   get route() {
@@ -982,12 +1004,20 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     }
     if (this.entryId) this._covers = sharedCoverStore(this);
     else if (this._covers.closed) this._covers = new CoverStore(this);
+    globalThis.document?.addEventListener("visibilitychange", this._handlePageResume);
+    globalThis.document?.addEventListener("resume", this._handlePageResume);
+    globalThis.addEventListener?.("pageshow", this._handlePageResume);
     this._loadStyles();
     this._start();
   }
 
   disconnectedCallback() {
     this._connected = false;
+    this._lifecycleGeneration += 1;
+    this._recoveryPromise = null;
+    globalThis.document?.removeEventListener("visibilitychange", this._handlePageResume);
+    globalThis.document?.removeEventListener("resume", this._handlePageResume);
+    globalThis.removeEventListener?.("pageshow", this._handlePageResume);
     this._initializedEntry = "";
     this._initializationSerial += 1;
     this._initializing = false;
@@ -1005,8 +1035,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._lyricsCache.clear();
     this._activeLyricIndex = -1;
     this._lyricsManualScrollUntil = 0;
-    if (this._unsubscribeQueue) this._unsubscribeQueue();
-    this._unsubscribeQueue = null;
+    this._releaseQueueSubscription();
     if (this._progressTimer) clearInterval(this._progressTimer);
     this._progressTimer = null;
     if (this._volumeConfirmTimer) clearTimeout(this._volumeConfirmTimer);
@@ -1075,13 +1104,33 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     this._setConnectionState("connecting");
     this._render();
     this._subscribeQueue();
+    const timeoutMs = Math.max(
+      1,
+      Number(this._initializationTimeoutMs) || SESSION_INITIALIZATION_TIMEOUT,
+    );
+    const timeoutMarker = Object.freeze({});
+    let timeoutId;
     try {
       const queueEpoch = this._queueEpoch;
-      const [config, players, queueResponse] = await Promise.all([
-        this._call("config", {}, gate.signal),
-        this._call("media_players", {}, gate.signal),
-        this._call("queue", {}, gate.signal),
+      const response = await Promise.race([
+        Promise.all([
+          this._call("config", {}, gate.signal),
+          this._call("media_players", {}, gate.signal),
+          this._call("queue", {}, gate.signal),
+        ]),
+        new Promise((resolve) => {
+          timeoutId = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+        }),
       ]);
+      if (response === timeoutMarker) {
+        if (gate.isCurrent() && this._connected && initializingEntry === this.entryId) {
+          this._setConnectionState("unavailable");
+          this._setNotice("connectFailed", true);
+        }
+        this._initGate.cancel();
+        return false;
+      }
+      const [config, players, queueResponse] = response;
       if (!gate.isCurrent() || !this._connected || initializingEntry !== this.entryId) return false;
       this.config = config || {};
       this.players = responseItems(players);
@@ -1102,6 +1151,7 @@ class XiaoAINavidromePanel extends HTMLElementBase {
       }
       return false;
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       if (serial === this._initializationSerial) {
         this._initializing = false;
         this._initializationPromise = null;
@@ -1109,34 +1159,91 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     }
   }
 
-  async _subscribeQueue() {
-    if (this._unsubscribeQueue || !this.hass?.connection || !this.entryId) return;
+  async _subscribeQueue({ showError = true } = {}) {
+    if (this._unsubscribeQueue) return true;
+    if (!this.hass?.connection || !this.entryId) return false;
     const subscribedEntry = this.entryId;
     const connectionSignal = this._connectionController.signal;
+    const generation = ++this._subscriptionGeneration;
+    const request = Promise.resolve().then(() => this.hass.connection.subscribeMessage(
+      (event) => {
+        const status = queueStatus(event);
+        if (
+          status?.items
+          && this._connected
+          && !connectionSignal.aborted
+          && generation === this._subscriptionGeneration
+          && subscribedEntry === this.entryId
+        ) this._applyQueue(status);
+      },
+      { type: `${WS_PREFIX}subscribe_queue`, entry_id: subscribedEntry },
+    ));
+    request.then((unsubscribe) => {
+      if (
+        typeof unsubscribe === "function"
+        && (
+          connectionSignal.aborted
+          || generation !== this._subscriptionGeneration
+          || subscribedEntry !== this.entryId
+        )
+      ) this._closeQueueSubscription(unsubscribe);
+    }).catch(() => undefined);
+    const timeoutMs = Math.max(1, Number(this._subscriptionTimeoutMs) || QUEUE_SUBSCRIPTION_TIMEOUT);
+    let timeoutId;
+    let abortListener;
     try {
-      const unsubscribe = await this.hass.connection.subscribeMessage(
-        (event) => {
-          const status = queueStatus(event);
-          if (status?.items && this._connected && subscribedEntry === this.entryId) this._applyQueue(status);
-        },
-        { type: `${WS_PREFIX}subscribe_queue`, entry_id: subscribedEntry },
-      );
+      const unsubscribe = await Promise.race([
+        request,
+        new Promise((resolve) => {
+          timeoutId = setTimeout(() => resolve(null), timeoutMs);
+        }),
+        new Promise((_, reject) => {
+          if (connectionSignal.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          abortListener = () => reject(new DOMException("Aborted", "AbortError"));
+          connectionSignal.addEventListener("abort", abortListener, { once: true });
+        }),
+      ]);
       if (typeof unsubscribe === "function") {
         if (
           this._connected
           && !connectionSignal.aborted
+          && generation === this._subscriptionGeneration
           && subscribedEntry === this.entryId
           && !this._unsubscribeQueue
         ) {
           this._unsubscribeQueue = unsubscribe;
+          return true;
         } else {
-          unsubscribe();
+          this._closeQueueSubscription(unsubscribe);
         }
       }
-    } catch (_) {
-      if (this._connected && !connectionSignal.aborted && subscribedEntry === this.entryId) {
+      if (generation === this._subscriptionGeneration) this._subscriptionGeneration += 1;
+      if (
+        showError
+        && this._connected
+        && !connectionSignal.aborted
+        && subscribedEntry === this.entryId
+      ) {
         this._setNotice("liveQueueUnavailable", true);
       }
+      return false;
+    } catch (_) {
+      if (generation === this._subscriptionGeneration) this._subscriptionGeneration += 1;
+      if (
+        showError
+        && this._connected
+        && !connectionSignal.aborted
+        && subscribedEntry === this.entryId
+      ) {
+        this._setNotice("liveQueueUnavailable", true);
+      }
+      return false;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (abortListener) connectionSignal.removeEventListener("abort", abortListener);
     }
   }
 
@@ -1151,16 +1258,158 @@ class XiaoAINavidromePanel extends HTMLElementBase {
     );
   }
 
-  async _refreshQueue() {
+  async _refreshQueue({ showError = true, timeoutMs = 0 } = {}) {
     const before = this._queueEpoch;
+    let timeoutId;
     try {
-      const response = await this._call("queue");
+      const request = this._call("queue");
+      const timeoutMarker = Object.freeze({});
+      const response = timeoutMs > 0
+        ? await Promise.race([
+          request,
+          new Promise((resolve) => {
+            timeoutId = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+          }),
+        ])
+        : await request;
+      if (response === timeoutMarker) throw new Error("Queue refresh timed out");
       const status = queueStatus(response);
+      if (!status) throw new Error("Invalid queue response");
       // A subscription event that arrived while this request was in flight is newer.
-      if (status?.items && before === this._queueEpoch) this._applyQueue(status);
+      if (before === this._queueEpoch) this._applyQueue(status);
+      return true;
     } catch (error) {
-      if (!isAbort(error)) this._setNotice("queueLoadFailed", true);
+      if (!isAbort(error) && showError) this._setNotice("queueLoadFailed", true);
+      return false;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
+  }
+
+  _closeQueueSubscription(unsubscribe) {
+    if (typeof unsubscribe !== "function") return;
+    try {
+      Promise.resolve(unsubscribe()).catch(() => undefined);
+    } catch (_) {
+      // The old Home Assistant connection may already be closed.
+    }
+  }
+
+  _releaseQueueSubscription() {
+    this._subscriptionGeneration += 1;
+    const unsubscribe = this._unsubscribeQueue;
+    this._unsubscribeQueue = null;
+    this._closeQueueSubscription(unsubscribe);
+  }
+
+  async _renewQueueSubscription(options = {}) {
+    this._releaseQueueSubscription();
+    return this._subscribeQueue(options);
+  }
+
+  async _restartSession(expectedEntry, expectedLifecycle = this._lifecycleGeneration) {
+    if (
+      !this._connected
+      || !expectedEntry
+      || expectedEntry !== this.entryId
+      || expectedLifecycle !== this._lifecycleGeneration
+    ) return false;
+    this._initializedEntry = "";
+    this._initializationSerial += 1;
+    this._initializing = false;
+    this._initializationPromise = null;
+    this._initGate.cancel();
+    this._tracksGate.cancel();
+    this._playlistsGate.cancel();
+    this._playlistTracksGate.cancel();
+    this._detailGate.cancel();
+    this._lyricsGate.cancel();
+    this._connectionController.abort();
+    this._connectionController = new AbortController();
+    this._releaseQueueSubscription();
+    const attempt = this._start();
+    const timeoutMarker = Object.freeze({});
+    const timeoutMs = Math.max(
+      1,
+      Number(this._sessionRestartTimeoutMs) || SESSION_INITIALIZATION_TIMEOUT,
+    );
+    let timeoutId;
+    try {
+      const result = await Promise.race([
+        attempt,
+        new Promise((resolve) => {
+          timeoutId = setTimeout(() => resolve(timeoutMarker), timeoutMs);
+        }),
+      ]);
+      if (result !== timeoutMarker) {
+        return Boolean(result)
+          && this._connected
+          && expectedEntry === this.entryId
+          && expectedLifecycle === this._lifecycleGeneration;
+      }
+    } catch (_) {
+      // Reset the failed initialization below so the next state update can retry.
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+    if (
+      !this._connected
+      || expectedEntry !== this.entryId
+      || expectedLifecycle !== this._lifecycleGeneration
+    ) return false;
+    this._initializedEntry = "";
+    this._initializationSerial += 1;
+    this._initializing = false;
+    this._initializationPromise = null;
+    this._initGate.cancel();
+    this._connectionController.abort();
+    this._connectionController = new AbortController();
+    this._releaseQueueSubscription();
+    return false;
+  }
+
+  _recoverCurrentState() {
+    if (this._recoveryPromise) return this._recoveryPromise;
+    const expectedEntry = this.entryId;
+    const expectedLifecycle = this._lifecycleGeneration;
+    const isCurrent = () => (
+      this._connected
+      && expectedEntry
+      && expectedEntry === this.entryId
+      && expectedLifecycle === this._lifecycleGeneration
+    );
+    const recovery = (async () => {
+      if (!isCurrent()) return "inactive";
+      const timeoutMs = Math.max(1, Number(this._recoveryTimeoutMs) || RECOVERY_REQUEST_TIMEOUT);
+      const refreshed = await this._refreshQueue({ showError: false, timeoutMs });
+      if (!isCurrent()) return "inactive";
+      if (refreshed) {
+        const subscribed = await this._renewQueueSubscription({ showError: false });
+        if (!isCurrent()) return "inactive";
+        if (subscribed) return "refreshed";
+      }
+      const restarted = await this._restartSession(expectedEntry, expectedLifecycle);
+      if (!isCurrent()) return "inactive";
+      return restarted ? "restarted" : "failed";
+    })();
+    const tracked = recovery.finally(() => {
+      if (this._recoveryPromise === tracked) this._recoveryPromise = null;
+    });
+    this._recoveryPromise = tracked;
+    return tracked;
+  }
+
+  _handlePageResume() {
+    if (
+      !this._connected
+      || !this.entryId
+      || this._initializedEntry !== this.entryId
+      || (typeof document !== "undefined" && document.visibilityState === "hidden")
+    ) return;
+    const now = Date.now();
+    if (now - this._lastResumeValidationAt < PAGE_RESUME_VALIDATION_INTERVAL) return;
+    this._lastResumeValidationAt = now;
+    void this._recoverCurrentState();
   }
 
   _applyQueue(status) {
@@ -1422,10 +1671,15 @@ class XiaoAINavidromePanel extends HTMLElementBase {
 
   _queueCommand(command, fields = {}) {
     const commandEntry = this.entryId;
-    const commandSignal = this._connectionController.signal;
+    const commandLifecycle = this._lifecycleGeneration;
     this._commandChain = this._commandChain
       .catch(() => undefined)
       .then(async () => {
+        const pendingRecovery = this._recoveryPromise;
+        if (pendingRecovery) await pendingRecovery;
+        if (commandLifecycle !== this._lifecycleGeneration || commandEntry !== this.entryId) return null;
+        const commandController = this._connectionController;
+        const commandSignal = commandController.signal;
         if (commandSignal.aborted || commandEntry !== this.entryId) return null;
         const ready = this._initializedEntry === this.entryId || await this._start();
         if (
@@ -1449,11 +1703,16 @@ class XiaoAINavidromePanel extends HTMLElementBase {
         } catch (error) {
           if (isAbort(error) || commandSignal.aborted || commandEntry !== this.entryId) return null;
           if (isConflict(error)) {
-            this._setNotice("queueConflict", true);
-            await this._refreshQueue();
+            const recovery = await this._recoverCurrentState();
+            if (recovery === "refreshed") this._setNotice("queueConflict", true);
+            else if (recovery === "restarted") this._setNotice("connectionRestored");
+            else if (recovery !== "inactive") this._setNotice("operationFailed", true);
             return null;
           }
-          this._setNotice("operationFailed", true);
+          const recovery = await this._recoverCurrentState();
+          if (recovery === "refreshed") this._setNotice("operationStateRefreshed", true);
+          else if (recovery === "restarted") this._setNotice("connectionRestored");
+          else if (recovery !== "inactive") this._setNotice("operationFailed", true);
           return null;
         }
       });

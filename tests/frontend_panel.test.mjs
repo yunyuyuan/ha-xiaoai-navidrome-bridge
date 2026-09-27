@@ -458,6 +458,81 @@ test("disconnect during initialization starts a fresh connection immediately", a
   releaseLibrary();
 });
 
+test("initial connection is bounded and can be retried after a stalled request", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const notices = [];
+  let stalled = true;
+  Object.assign(panel, {
+    _connected: true,
+    _hass: {},
+    entryId: "entry-one",
+    _initializedEntry: "",
+    _initializing: false,
+    _initializationSerial: 0,
+    _initializationPromise: null,
+    _initializationTimeoutMs: 10,
+    _queueEpoch: 0,
+    queue: { items: [], revision: 0 },
+    config: {},
+    players: [],
+    syncing: false,
+    _render: () => undefined,
+    _setConnectionState(key) { this.connectionState = key; },
+    _setNotice: (key, isError = false) => notices.push([key, isError]),
+    _subscribeQueue: () => undefined,
+    _applyQueue(status) { this.queue = status; },
+    _loadTracks: async () => undefined,
+    _loadPlaylists: async () => undefined,
+    _call: async (command) => {
+      if (stalled) return new Promise(() => undefined);
+      if (command === "config") return { connected: true, index: {} };
+      if (command === "media_players") return { items: [] };
+      return { items: [], revision: 2 };
+    },
+  });
+  panel._initGate = new RequestGate();
+
+  assert.equal(
+    await Promise.race([
+      panel._start(),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]),
+    false,
+  );
+  assert.equal(panel._initializing, false);
+  assert.equal(panel._initializationPromise, null);
+  assert.equal(panel._initializedEntry, "");
+  assert.deepEqual(notices, [["connectFailed", true]]);
+
+  stalled = false;
+  assert.equal(await panel._start(), true);
+  assert.equal(panel._initializedEntry, "entry-one");
+  assert.equal(panel.queue.revision, 2);
+});
+
+test("completed WebSocket calls remove their AbortSignal listener", async () => {
+  let added = 0;
+  let removed = 0;
+  let listener;
+  const signal = {
+    aborted: false,
+    addEventListener(_type, callback) { added += 1; listener = callback; },
+    removeEventListener(_type, callback) {
+      assert.equal(callback, listener);
+      removed += 1;
+    },
+  };
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    entryId: "entry-one",
+    _hass: { callWS: async () => ({ items: [], revision: 1 }) },
+  });
+
+  assert.deepEqual(await panel._call("queue", {}, signal), { items: [], revision: 1 });
+  assert.equal(added, 1);
+  assert.equal(removed, 1);
+});
+
 test("an abandoned command releases the chain and a reconnect click waits for readiness", async () => {
   const panel = Object.create(XiaoAINavidromePanel.prototype);
   let notices = 0;
@@ -511,6 +586,7 @@ test("a queued command from the detached generation is never sent after reconnec
     entryId: "entry-one",
     _initializedEntry: "entry-one",
     _connectionController: new AbortController(),
+    _lifecycleGeneration: 0,
     _commandChain: blockedChain,
     queue: { items: [], revision: 4 },
     _hass: {
@@ -526,6 +602,7 @@ test("a queued command from the detached generation is never sent after reconnec
   const oldController = panel._connectionController;
   const queued = panel._queueCommand("queue_control", { action: "next" });
   oldController.abort();
+  panel._lifecycleGeneration += 1;
   panel._connectionController = new AbortController();
   panel._initializedEntry = "";
   panel._start = async () => {
@@ -538,6 +615,234 @@ test("a queued command from the detached generation is never sent after reconnec
   assert.equal(commandCalls, 0);
 });
 
+test("a failed mutation refreshes current state without replaying the operation", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const notices = [];
+  let mutationCalls = 0;
+  let queueReads = 0;
+  let subscriptionRenewals = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: null,
+    _queueEpoch: 0,
+    queue: { items: [{ id: "track-one" }], current_index: 0, revision: 4 },
+    _call: async (command) => {
+      if (command === "queue") {
+        queueReads += 1;
+        return { items: [{ id: "track-one" }], current_index: 0, revision: 5 };
+      }
+      mutationCalls += 1;
+      throw new Error("synthetic transport failure");
+    },
+    _applyQueue(status) { this.queue = status; this._queueEpoch += 1; },
+    _renewQueueSubscription: async () => { subscriptionRenewals += 1; return true; },
+    _setNotice: (key, isError = false) => notices.push([key, isError]),
+  });
+
+  assert.equal(await panel._queueCommand("queue_control", { action: "next" }), null);
+  assert.equal(mutationCalls, 1);
+  assert.equal(queueReads, 1);
+  assert.equal(subscriptionRenewals, 1);
+  assert.equal(panel.queue.revision, 5);
+  assert.deepEqual(notices, [["operationStateRefreshed", true]]);
+});
+
+test("a failed mutation rebuilds the session when state refresh also fails", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const notices = [];
+  let mutationCalls = 0;
+  let restartCalls = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: null,
+    queue: { items: [], revision: 4 },
+    _call: async () => {
+      mutationCalls += 1;
+      if (mutationCalls === 1) throw new Error("synthetic transport failure");
+      return { items: [], revision: 5 };
+    },
+    _refreshQueue: async () => false,
+    _restartSession: async (entryId) => {
+      restartCalls += 1;
+      assert.equal(entryId, "entry-one");
+      panel._connectionController.abort();
+      panel._connectionController = new AbortController();
+      panel._initializedEntry = entryId;
+      return true;
+    },
+    _applyQueue(status) { this.queue = status; },
+    _setNotice: (key, isError = false) => notices.push([key, isError]),
+  });
+
+  assert.equal(await panel._queueCommand("queue_control", { action: "next" }), null);
+  assert.equal(mutationCalls, 1);
+  assert.equal(restartCalls, 1);
+  assert.deepEqual(notices, [["connectionRestored", false]]);
+  assert.notEqual(await panel._queueCommand("queue_control", { action: "next" }), null);
+  assert.equal(mutationCalls, 2);
+  assert.equal(panel.queue.revision, 5);
+});
+
+test("current-state recovery is single-flight and page resume triggers one validation", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let refreshCalls = 0;
+  let renewals = 0;
+  let releaseRefresh;
+  const pendingRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _recoveryPromise: null,
+    _refreshQueue: async () => { refreshCalls += 1; return pendingRefresh; },
+    _renewQueueSubscription: async () => { renewals += 1; return true; },
+  });
+
+  const first = panel._recoverCurrentState();
+  const second = panel._recoverCurrentState();
+  assert.equal(first, second);
+  assert.equal(refreshCalls, 1);
+  releaseRefresh(true);
+  assert.equal(await first, "refreshed");
+  assert.equal(await second, "refreshed");
+  assert.equal(renewals, 1);
+  assert.equal(panel._recoveryPromise, null);
+
+  panel._handlePageResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refreshCalls, 2);
+  assert.equal(renewals, 2);
+  panel._handlePageResume();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refreshCalls, 2);
+  assert.equal(renewals, 2);
+});
+
+test("a retained panel validates state when its Home Assistant route resumes", () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let resumes = 0;
+  Object.assign(panel, {
+    _connected: true,
+    _route: { path: "/previous" },
+    _handlePageResume: () => { resumes += 1; },
+  });
+
+  panel.route = { path: "/current" };
+  panel.route = { path: "/current" };
+  assert.equal(resumes, 1);
+});
+
+test("a click during page recovery waits and uses the restarted connection generation", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const oldController = new AbortController();
+  let releaseRecovery;
+  let commandCalls = 0;
+  const recovery = new Promise((resolve) => { releaseRecovery = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: oldController,
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: recovery,
+    queue: { items: [], revision: 4 },
+    _call: async () => {
+      commandCalls += 1;
+      return { items: [], revision: 5 };
+    },
+    _applyQueue(status) { this.queue = status; },
+    _setNotice: () => undefined,
+  });
+
+  const pendingCommand = panel._queueCommand("queue_control", { action: "next" });
+  await Promise.resolve();
+  assert.equal(commandCalls, 0);
+  oldController.abort();
+  panel._connectionController = new AbortController();
+  releaseRecovery("restarted");
+
+  assert.notEqual(await pendingCommand, null);
+  assert.equal(commandCalls, 1);
+  assert.equal(panel.queue.revision, 5);
+});
+
+test("a click queued behind a failed mutation uses the recovered connection", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let mutationCalls = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _lifecycleGeneration: 0,
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: null,
+    queue: { items: [], revision: 4 },
+    _call: async () => {
+      mutationCalls += 1;
+      if (mutationCalls === 1) throw new Error("synthetic transport failure");
+      return { items: [], revision: 5 };
+    },
+    _refreshQueue: async () => false,
+    _restartSession: async function restart(entryId) {
+      this._connectionController.abort();
+      this._connectionController = new AbortController();
+      this._initializedEntry = entryId;
+      return true;
+    },
+    _applyQueue(status) { this.queue = status; },
+    _setNotice: () => undefined,
+  });
+
+  const failed = panel._queueCommand("queue_control", { action: "next" });
+  const queued = panel._queueCommand("queue_control", { action: "next" });
+  assert.equal(await failed, null);
+  assert.notEqual(await queued, null);
+  assert.equal(mutationCalls, 2);
+  assert.equal(panel.queue.revision, 5);
+});
+
+test("session restart invalidates the old connection and subscription generation", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const oldController = new AbortController();
+  let unsubscribed = 0;
+  let started = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _initializationSerial: 3,
+    _initializing: true,
+    _initializationPromise: Promise.resolve(false),
+    _connectionController: oldController,
+    _unsubscribeQueue: () => { unsubscribed += 1; },
+    _start: async function start() {
+      started += 1;
+      assert.equal(this._initializedEntry, "");
+      assert.notEqual(this._connectionController, oldController);
+      return true;
+    },
+  });
+  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate", "_lyricsGate"]) {
+    panel[key] = new RequestGate();
+  }
+
+  assert.equal(await panel._restartSession("entry-one"), true);
+  assert.equal(oldController.signal.aborted, true);
+  assert.equal(unsubscribed, 1);
+  assert.equal(panel._unsubscribeQueue, null);
+  assert.equal(panel._initializationSerial, 4);
+  assert.equal(started, 1);
+});
+
 test("a late subscription from the detached connection cannot replace the current one", async () => {
   const pending = [];
   let staleUnsubscribed = 0;
@@ -547,6 +852,7 @@ test("a late subscription from the detached connection cannot replace the curren
     _connected: true,
     entryId: "entry-one",
     _unsubscribeQueue: null,
+    _subscriptionGeneration: 0,
     _connectionController: new AbortController(),
     _hass: {
       connection: {
@@ -557,11 +863,14 @@ test("a late subscription from the detached connection cannot replace the curren
   });
 
   const first = panel._subscribeQueue();
+  await Promise.resolve();
   panel._connectionController.abort();
   panel._connectionController = new AbortController();
   const second = panel._subscribeQueue();
+  await Promise.resolve();
   pending[0](() => { staleUnsubscribed += 1; });
   await first;
+  await Promise.resolve();
   assert.equal(staleUnsubscribed, 1);
   assert.equal(panel._unsubscribeQueue, null);
 
@@ -571,6 +880,277 @@ test("a late subscription from the detached connection cannot replace the curren
   assert.equal(panel._unsubscribeQueue, currentUnsubscribe);
   panel._unsubscribeQueue();
   assert.equal(currentUnsubscribed, 1);
+});
+
+test("released subscription callbacks cannot update a newer queue generation", async () => {
+  const callbacks = [];
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _unsubscribeQueue: null,
+    _subscriptionGeneration: 0,
+    _connectionController: new AbortController(),
+    queue: { items: [], revision: 0 },
+    _hass: {
+      connection: {
+        subscribeMessage: async (callback) => {
+          callbacks.push(callback);
+          return () => undefined;
+        },
+      },
+    },
+    _setNotice: () => undefined,
+    _renderQueueOnly: () => undefined,
+    _syncProgressTimer: () => undefined,
+    _syncActiveLyricLine: () => undefined,
+    _queueEpoch: 0,
+    _pendingVolume: null,
+    _volumeConfirmTimer: null,
+    _lyricsGate: new RequestGate(),
+    lyricsOpen: false,
+    lyricsResult: null,
+    _lyricsCache: new Map(),
+    _activeLyricIndex: -1,
+    _lyricsManualScrollUntil: 0,
+  });
+
+  assert.equal(await panel._subscribeQueue(), true);
+  callbacks[0]({ items: [{ id: "current" }], current_index: 0, revision: 1 });
+  assert.equal(panel.queue.revision, 1);
+  panel._releaseQueueSubscription();
+  callbacks[0]({ items: [{ id: "stale" }], current_index: 0, revision: 2 });
+  assert.equal(panel.queue.revision, 1);
+
+  assert.equal(await panel._subscribeQueue(), true);
+  callbacks[1]({ items: [{ id: "new" }], current_index: 0, revision: 2 });
+  assert.equal(panel.queue.revision, 2);
+  assert.equal(panel.queue.items[0].id, "new");
+  panel._releaseQueueSubscription();
+});
+
+test("a stalled subscription handshake is bounded and escalates recovery", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let restarts = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _unsubscribeQueue: null,
+    _subscriptionGeneration: 0,
+    _subscriptionTimeoutMs: 10,
+    _connectionController: new AbortController(),
+    _recoveryPromise: null,
+    _hass: { connection: { subscribeMessage: () => new Promise(() => undefined) } },
+    _setNotice: () => undefined,
+    _refreshQueue: async () => true,
+    _restartSession: async () => { restarts += 1; return true; },
+  });
+
+  assert.equal(
+    await Promise.race([
+      panel._recoverCurrentState(),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]),
+    "restarted",
+  );
+  assert.equal(restarts, 1);
+  assert.equal(panel._recoveryPromise, null);
+});
+
+test("a stalled queue read is bounded and escalates recovery", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let restarts = 0;
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _recoveryPromise: null,
+    _recoveryTimeoutMs: 10,
+    _queueEpoch: 0,
+    _call: () => new Promise(() => undefined),
+    _restartSession: async () => { restarts += 1; return true; },
+  });
+
+  assert.equal(
+    await Promise.race([
+      panel._recoverCurrentState(),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]),
+    "restarted",
+  );
+  assert.equal(restarts, 1);
+  assert.equal(panel._recoveryPromise, null);
+});
+
+test("a stalled session restart releases initialization for the next attempt", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const oldController = new AbortController();
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _initializationSerial: 3,
+    _initializing: false,
+    _initializationPromise: null,
+    _connectionController: oldController,
+    _unsubscribeQueue: null,
+    _subscriptionGeneration: 0,
+    _sessionRestartTimeoutMs: 10,
+    _start: () => new Promise(() => undefined),
+  });
+  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate", "_lyricsGate"]) {
+    panel[key] = new RequestGate();
+  }
+
+  assert.equal(
+    await Promise.race([
+      panel._restartSession("entry-one"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]),
+    false,
+  );
+  assert.equal(oldController.signal.aborted, true);
+  assert.equal(panel._initializedEntry, "");
+  assert.equal(panel._initializing, false);
+  assert.equal(panel._initializationPromise, null);
+  assert.equal(panel._connectionController.signal.aborted, false);
+});
+
+test("an old restart timeout cannot abort a newer Panel lifecycle", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _initializationSerial: 3,
+    _initializing: false,
+    _initializationPromise: null,
+    _connectionController: new AbortController(),
+    _unsubscribeQueue: null,
+    _subscriptionGeneration: 0,
+    _lifecycleGeneration: 8,
+    _sessionRestartTimeoutMs: 10,
+    _start: () => new Promise(() => undefined),
+  });
+  for (const key of ["_initGate", "_tracksGate", "_playlistsGate", "_playlistTracksGate", "_detailGate", "_lyricsGate"]) {
+    panel[key] = new RequestGate();
+  }
+
+  const restart = panel._restartSession("entry-one", 8);
+  panel._lifecycleGeneration = 9;
+  panel._connectionController.abort();
+  const latestController = new AbortController();
+  panel._connectionController = latestController;
+
+  assert.equal(await restart, false);
+  assert.equal(latestController.signal.aborted, false);
+  assert.equal(panel._connectionController, latestController);
+});
+
+test("an old recovery cannot restart a reconnected lifecycle for the same entry", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let releaseRefresh;
+  let restarts = 0;
+  const pendingRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _lifecycleGeneration: 1,
+    _connectionController: new AbortController(),
+    _recoveryPromise: null,
+    _refreshQueue: async () => pendingRefresh,
+    _restartSession: async () => { restarts += 1; return true; },
+  });
+
+  const oldRecovery = panel._recoverCurrentState();
+  panel._connected = false;
+  panel._lifecycleGeneration += 1;
+  panel._recoveryPromise = null;
+  panel._connectionController.abort();
+  const newController = new AbortController();
+  panel._connectionController = newController;
+  panel._connected = true;
+  releaseRefresh(false);
+
+  assert.equal(await oldRecovery, "inactive");
+  assert.equal(restarts, 0);
+  assert.equal(newController.signal.aborted, false);
+});
+
+test("an old recovery cannot affect the latest same entry after an A to B to A switch", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  let releaseRefresh;
+  let restarts = 0;
+  const pendingRefresh = new Promise((resolve) => { releaseRefresh = resolve; });
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-a",
+    _initializedEntry: "entry-a",
+    _lifecycleGeneration: 4,
+    _connectionController: new AbortController(),
+    _recoveryPromise: null,
+    _refreshQueue: async () => pendingRefresh,
+    _restartSession: async () => { restarts += 1; return true; },
+  });
+
+  const oldRecovery = panel._recoverCurrentState();
+  panel.entryId = "entry-b";
+  panel._lifecycleGeneration += 1;
+  panel._recoveryPromise = null;
+  panel.entryId = "entry-a";
+  panel._lifecycleGeneration += 1;
+  const latestController = new AbortController();
+  panel._connectionController = latestController;
+  releaseRefresh(false);
+
+  assert.equal(await oldRecovery, "inactive");
+  assert.equal(restarts, 0);
+  assert.equal(latestController.signal.aborted, false);
+});
+
+test("queue conflict reports failure when state recovery cannot complete", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const notices = [];
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _lifecycleGeneration: 0,
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: null,
+    queue: { items: [], revision: 4 },
+    _call: async () => { throw Object.assign(new Error("synthetic conflict"), { code: 409 }); },
+    _recoverCurrentState: async () => "failed",
+    _setNotice: (key, isError = false) => notices.push([key, isError]),
+  });
+
+  assert.equal(await panel._queueCommand("queue_control", { action: "next" }), null);
+  assert.deepEqual(notices, [["operationFailed", true]]);
+});
+
+test("an obsolete queue conflict stays silent after its Panel lifecycle ends", async () => {
+  const panel = Object.create(XiaoAINavidromePanel.prototype);
+  const notices = [];
+  Object.assign(panel, {
+    _connected: true,
+    entryId: "entry-one",
+    _initializedEntry: "entry-one",
+    _connectionController: new AbortController(),
+    _lifecycleGeneration: 0,
+    _commandChain: Promise.resolve(),
+    _recoveryPromise: null,
+    queue: { items: [], revision: 4 },
+    _call: async () => { throw Object.assign(new Error("synthetic conflict"), { code: 409 }); },
+    _recoverCurrentState: async () => "inactive",
+    _setNotice: (key, isError = false) => notices.push([key, isError]),
+  });
+
+  assert.equal(await panel._queueCommand("queue_control", { action: "next" }), null);
+  assert.deepEqual(notices, []);
 });
 
 test("switching entries rejects a late command response and resets queue revision", async () => {
@@ -587,6 +1167,7 @@ test("switching entries rejects a late command response and resets queue revisio
     _initializationSerial: 1,
     _initializationPromise: null,
     _connectionController: new AbortController(),
+    _lifecycleGeneration: 0,
     _commandChain: Promise.resolve(),
     _queueEpoch: 3,
     _queueReceivedAt: Date.now(),
